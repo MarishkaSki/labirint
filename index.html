@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Лабиринт — побег шарика</title>
+  <link rel="stylesheet" href="src/style.css" />
+</head>
+<body>
+  <div id="game">
+    <canvas id="scene"></canvas>
+
+    <div class="vignette"></div>
+
+    <div id="preview" class="preview-ui hidden">
+      <div class="preview-head">
+        <div class="eyebrow">ПЕРЕД СТАРТОМ</div>
+        <div class="preview-title">КАРТА ЛАБИРИНТА</div>
+        <div class="preview-level">Уровень <span id="previewLevel">1</span></div>
+      </div>
+      <div class="preview-bottom">
+        <span id="previewCount" class="preview-count">30</span>
+        <span class="preview-count-label">сек</span>
+        <button id="previewSkip" class="preview-skip" type="button">Пропустить</button>
+      </div>
+    </div>
+
+    <div id="hud" class="hidden">
+      <div class="hud-block">
+        <div class="hud-level-row">
+          <span class="hud-label">Уровень</span>
+          <span id="level" class="hud-level-value">1</span>
+        </div>
+        <div class="hud-label">Время</div>
+        <div id="timer" class="hud-value">00:00.0</div>
+        <div class="hud-best">
+          <span class="hud-label">Рекорд</span>
+          <span id="best" class="hud-value hud-small">—</span>
+        </div>
+        <div class="hud-keys">
+          <span class="hud-label">Ключи</span>
+          <span id="keyPips" class="key-pips" aria-label="Собрано ключей: 0 из 3">
+            <span class="key-pip"></span>
+            <span class="key-pip"></span>
+            <span class="key-pip"></span>
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <div class="top-controls">
+      <button id="helpBtn" class="help-fab" type="button" aria-label="Как играть" aria-expanded="false" aria-controls="helpOverlay">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"></path>
+        </svg>
+      </button>
+
+      <div id="themeSwitch" class="theme-switch" role="group" aria-label="Освещение">
+        <button id="dayBtn" class="theme-btn" type="button" aria-pressed="false">День</button>
+        <button id="nightBtn" class="theme-btn active" type="button" aria-pressed="true">Ночь</button>
+      </div>
+    </div>
+
+    <button id="hintBtn" class="hint-fab" type="button" aria-label="Подсказка, осталось 10">
+      <span class="hint-fab-icon">?</span>
+      <span class="hint-fab-label">Подсказка</span>
+      <span id="hintCount" class="hint-fab-count">10</span>
+    </button>
+
+    <button id="ballBtn" class="ball-fab" type="button" aria-expanded="false" aria-controls="ballPanel" aria-label="Настроить мячик">
+      <span id="ballIcon" class="ball-fab-icon"></span>
+      <span class="ball-fab-label">Мяч</span>
+    </button>
+
+    <div id="ballPanel" class="ball-panel" aria-label="Настройка мячика">
+      <div class="ball-panel-head">
+        <div id="ballPreview" class="ball-preview"></div>
+        <div class="ball-panel-titles">
+          <div class="eyebrow">Мячик</div>
+          <div class="ball-panel-title">Цвет и узор</div>
+        </div>
+        <button id="ballClose" class="ball-close" type="button" aria-label="Закрыть">×</button>
+      </div>
+
+      <div class="panel-section-title">Цвет</div>
+      <div id="ballColorGrid" class="color-grid"></div>
+
+      <label class="custom-color-row">
+        <span class="custom-color-swatch">
+          <input id="ballCustomColor" type="color" value="#ff7526" aria-label="Свой цвет" />
+        </span>
+        <span>Свой цвет</span>
+      </label>
+
+      <div class="panel-section-title">Узор</div>
+      <div id="ballPatternGrid" class="pattern-grid"></div>
+    </div>
+
+    <div id="overlay" class="overlay">
+      <div class="panel">
+        <div class="eyebrow">3D · ПОБЕГ ИЗ ЛАБИРИНТА</div>
+        <h1>ЛАБИРИНТ</h1>
+        <p class="lede">Собери 3 ключа, перепрыгивай ямы<br />и переходи реку по мостам.<br />За выходом — новый уровень.</p>
+        <div class="keys">
+          <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><span>или стрелки — газ и поворот</span></div>
+          <div><kbd>Пробел</kbd><span>прыжок через ямы</span></div>
+          <div><kbd>R</kbd><span>заново</span><kbd>N</kbd><span>новый лабиринт</span></div>
+        </div>
+        <button id="startBtn" type="button">Начать</button>
+        <div class="tip">Нажми любую клавишу</div>
+      </div>
+    </div>
+
+    <div id="win" class="overlay hidden">
+      <div class="panel panel-win">
+        <div id="levelEyebrow" class="eyebrow">УРОВЕНЬ ПРОЙДЕН</div>
+        <h1 id="levelTitle">УРОВЕНЬ 2</h1>
+        <div id="winTime" class="win-time">00:00.0</div>
+        <div id="winBest" class="win-best"></div>
+        <button id="againBtn" type="button">Дальше</button>
+      </div>
+    </div>
+
+    <div id="lose" class="overlay hidden">
+      <div class="panel panel-lose">
+        <div class="eyebrow">УПС…</div>
+        <h1>ВЫ ПРОИГРАЛИ</h1>
+        <p id="loseReason" class="lede">Вы упали в яму.</p>
+        <button id="loseBtn" class="danger-btn" type="button">Сначала</button>
+      </div>
+    </div>
+
+    <div id="helpOverlay" class="help-overlay" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
+      <div class="help-panel">
+        <div class="help-head">
+          <div>
+            <div class="eyebrow">ЛАБИРИНТ · ПРАВИЛА</div>
+            <h2 id="helpTitle">Как играть</h2>
+          </div>
+          <button id="helpClose" class="help-close" type="button" aria-label="Закрыть">×</button>
+        </div>
+
+        <div class="help-list">
+          <div class="help-item">
+            <div class="help-num">1</div>
+            <div>
+              <b>Цель</b>
+              <p>Собери <strong>3 ключа</strong> и доберись до зелёной площадки. Пока ключей нет, выход заперт — но его видно. Все 3 ключа открывают выход и следующий уровень.</p>
+            </div>
+          </div>
+          <div class="help-item">
+            <div class="help-num">2</div>
+            <div>
+              <b>Управление</b>
+              <p><kbd>W</kbd>/<kbd>S</kbd> — катить вперёд/назад, <kbd>A</kbd>/<kbd>D</kbd> — поворот. Камера всегда летит за мячиком.</p>
+            </div>
+          </div>
+          <div class="help-item">
+            <div class="help-num">3</div>
+            <div>
+              <b>Прыжок</b>
+              <p><kbd>Пробел</kbd> — прыжок через ямы. Ямы встречаются редко, но прыгать нужно вовремя.</p>
+            </div>
+          </div>
+          <div class="help-item">
+            <div class="help-num">4</div>
+            <div>
+              <b>Ямы</b>
+              <p>Упал в яму — падаешь вниз и появляется экран «Вы проиграли». Кнопка «Сначала» перезапускает уровень с самого начала.</p>
+            </div>
+          </div>
+          <div class="help-item">
+            <div class="help-num">5</div>
+            <div>
+              <b>Мосты и забор</b>
+              <p>Через реку ведут деревянные мосты. Берега и мосты огорожены — в воду не попадёшь, но на мост нужно аккуратно заехать.</p>
+            </div>
+          </div>
+          <div class="help-item">
+            <div class="help-num">6</div>
+            <div>
+              <b>Подсказки</b>
+              <p>Кнопка «Подсказка» слева внизу. Всего <strong>10</strong> использований. На 15 секунд на стенах появляются золотые стрелки к ближайшему ключу или к выходу.</p>
+            </div>
+          </div>
+          <div class="help-item">
+            <div class="help-num">7</div>
+            <div>
+              <b>Мячик</b>
+              <p>Кнопка «Мяч» справа внизу: палитра цветов, свой цвет и узоры — полосы, горошек, клетка, волны, футбольный, баскетбольный, теннисный, волейбольный и другие.</p>
+            </div>
+          </div>
+          <div class="help-item">
+            <div class="help-num">8</div>
+            <div>
+              <b>День и ночь</b>
+              <p>Кнопки «День» / «Ночь» справа вверху. Днём светит солнце, ночью — луна и звёзды.</p>
+            </div>
+          </div>
+          <div class="help-item">
+            <div class="help-num">9</div>
+            <div>
+              <b>Уровни</b>
+              <p>За выходом начинается новый уровень. Время и рекорд считаются отдельно для каждого уровня.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="help-footer">Собери ключи, перепрыгни ямы и перейди реку. Удачи!</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="vendor/three.min.js"></script>
+  <script src="src/game.js"></script>
+</body>
+</html>

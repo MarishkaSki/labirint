@@ -3,6 +3,11 @@
   --accent-warm: #ffb35c;
   --bg: #05080e;
   --panel: rgba(8, 14, 24, 0.78);
+  --touch-inset-left: max(18px, env(safe-area-inset-left));
+  --touch-inset-right: max(18px, env(safe-area-inset-right));
+  --touch-inset-bottom: max(18px, env(safe-area-inset-bottom));
+  --touch-joystick-size: clamp(124px, 38vmin, 180px);
+  --touch-jump-size: clamp(68px, 19vmin, 90px);
 }
 
 * {
@@ -715,6 +720,162 @@ body {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
+}
+
+/* ---------- Сенсорное управление ---------- */
+
+.touch-controls {
+  position: fixed;
+  inset: 0;
+  z-index: 9;
+  display: none;
+  pointer-events: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.touch-device .touch-controls:not(.hidden) {
+  display: block;
+}
+
+.joystick {
+  position: absolute;
+  right: var(--touch-inset-right);
+  bottom: var(--touch-inset-bottom);
+  width: var(--touch-joystick-size);
+  height: var(--touch-joystick-size);
+  border: 1px solid rgba(78, 240, 196, 0.22);
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 50% 50%,
+    rgba(78, 240, 196, 0.06),
+    rgba(78, 240, 196, 0.02) 46%,
+    transparent 72%
+  );
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025), 0 0 34px rgba(78, 240, 196, 0.07);
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.joystick::before {
+  content: "";
+  position: absolute;
+  inset: 15%;
+  border: 1px dashed rgba(78, 240, 196, 0.12);
+  border-radius: 50%;
+}
+
+.joystick-hints {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  color: var(--accent);
+  opacity: 0.22;
+  pointer-events: none;
+}
+
+.joystick-knob {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 48%;
+  height: 48%;
+  border: 1px solid rgba(78, 240, 196, 0.46);
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 34% 27%,
+    rgba(255, 255, 255, 0.34),
+    rgba(255, 255, 255, 0.05) 34%,
+    rgba(8, 24, 34, 0.62) 76%
+  );
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35), 0 0 22px rgba(78, 240, 196, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  transform: translate(-50%, -50%);
+  transition: transform 0.16s cubic-bezier(0.2, 0.8, 0.3, 1), border-color 0.16s ease,
+    box-shadow 0.16s ease;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.joystick.active .joystick-knob {
+  border-color: rgba(78, 240, 196, 0.9);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4), 0 0 30px rgba(78, 240, 196, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.jump-btn {
+  position: absolute;
+  left: var(--touch-inset-left);
+  bottom: var(--touch-inset-bottom);
+  display: grid;
+  place-items: center;
+  width: var(--touch-jump-size);
+  height: var(--touch-jump-size);
+  padding: 0;
+  border: 1px solid rgba(78, 240, 196, 0.32);
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 50% 32%,
+    rgba(78, 240, 196, 0.12),
+    rgba(78, 240, 196, 0.035) 58%,
+    transparent 76%
+  );
+  box-shadow: 0 0 30px rgba(78, 240, 196, 0.1), inset 0 0 22px rgba(78, 240, 196, 0.06);
+  color: #bffff0;
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.12s ease, background 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.jump-btn svg {
+  pointer-events: none;
+  filter: drop-shadow(0 0 8px rgba(78, 240, 196, 0.35));
+}
+
+.jump-btn.pressed {
+  transform: scale(0.93);
+  border-color: rgba(78, 240, 196, 0.75);
+  background: radial-gradient(
+    circle at 50% 32%,
+    rgba(78, 240, 196, 0.28),
+    rgba(78, 240, 196, 0.08) 58%,
+    transparent 76%
+  );
+  box-shadow: 0 0 34px rgba(78, 240, 196, 0.32), inset 0 0 28px rgba(78, 240, 196, 0.14);
+}
+
+/* Освобождаем нижние углы под джойстик и кнопку прыжка. */
+.touch-device .hint-fab {
+  left: var(--touch-inset-left);
+  bottom: calc(var(--touch-inset-bottom) + var(--touch-jump-size) + 12px);
+}
+
+.touch-device .ball-fab {
+  right: var(--touch-inset-right);
+  bottom: calc(var(--touch-inset-bottom) + var(--touch-joystick-size) + 12px);
+}
+
+/* На низком экране в ландшафте ставим кнопки в один ряд с управлением,
+   чтобы они не наезжали на HUD. */
+@media (max-height: 430px) and (orientation: landscape) {
+  .touch-device .hint-fab {
+    left: calc(var(--touch-inset-left) + var(--touch-jump-size) + 10px);
+    bottom: var(--touch-inset-bottom);
+  }
+
+  .touch-device .ball-fab {
+    right: calc(var(--touch-inset-right) + var(--touch-joystick-size) + 10px);
+    bottom: var(--touch-inset-bottom);
+  }
 }
 
 .ball-panel {

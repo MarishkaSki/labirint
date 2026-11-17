@@ -133,6 +133,17 @@
   const ballStyleSection = document.getElementById("ballStyleSection");
   const ballCustomColor = document.getElementById("ballCustomColor");
   const ballCloseBtn = document.getElementById("ballClose");
+  const touchControls = document.getElementById("touchControls");
+  const joystickEl = document.getElementById("joystick");
+  const joystickKnob = document.getElementById("joystickKnob");
+  const jumpBtn = document.getElementById("jumpBtn");
+
+  // Сенсорный экран: показываем джойстик и кнопку прыжка только там,
+  // где основной способ ввода — палец.
+  const touchUiEnabled =
+    window.matchMedia("(pointer: coarse)").matches ||
+    (navigator.maxTouchPoints > 0 && window.matchMedia("(hover: none)").matches);
+  if (touchUiEnabled) document.body.classList.add("touch-device");
 
   // ---------- Рендерер и сцена ----------
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
@@ -2643,6 +2654,9 @@
 
   // ---------- Состояние ----------
   const keys = new Set();
+  // Аналоговый ввод с сенсорного джойстика: -1…1.
+  let touchTurn = 0;
+  let touchDrive = 0;
   let mode = "menu"; // menu | playing | transition | falling | lost
   let level = 1;
   let time = 0;
@@ -4522,6 +4536,7 @@
     if (mode !== "playing") return;
     mode = "falling";
     keys.clear();
+    hideTouchControls();
     jumpRequested = false;
     boosting = false;
     grounded = false;
@@ -4638,6 +4653,7 @@
     mode = "preview";
     time = 0;
     keys.clear();
+    hideTouchControls();
     closeBallPanel();
     hideHint();
 
@@ -4684,6 +4700,7 @@
     previewUi.classList.add("hidden");
     clearPreviewMarkers();
     hud.classList.remove("hidden");
+    showTouchControls();
 
     camera.far = 130;
     camera.updateProjectionMatrix();
@@ -4723,6 +4740,7 @@
 
     mode = "transition";
     keys.clear();
+    hideTouchControls();
     vel.set(0, 0);
     hideHint();
 
@@ -4817,6 +4835,7 @@
     helpOpen = true;
     helpOpenedAt = performance.now();
     keys.clear();
+    hideTouchControls();
     closeBallPanel();
     helpOverlay.classList.remove("revealed");
     helpOverlay.classList.add("open");
@@ -4833,6 +4852,7 @@
     helpOverlay.classList.remove("open");
     helpOverlay.classList.remove("revealed");
     helpBtn.setAttribute("aria-expanded", "false");
+    if (mode === "playing") showTouchControls();
     if (hintState) {
       hintState.until += performance.now() - helpOpenedAt;
     }
@@ -5389,12 +5409,14 @@
   }
 
   function stepPhysics(dt) {
-    const turn =
+    const keyTurn =
       (keys.has("KeyD") || keys.has("ArrowRight") ? 1 : 0) -
       (keys.has("KeyA") || keys.has("ArrowLeft") ? 1 : 0);
-    const drive =
+    const keyDrive =
       (keys.has("KeyW") || keys.has("ArrowUp") ? 1 : 0) -
       (keys.has("KeyS") || keys.has("ArrowDown") ? 1 : 0);
+    const turn = Math.max(-1, Math.min(1, keyTurn + touchTurn));
+    const drive = Math.max(-1, Math.min(1, keyDrive + touchDrive));
 
     // A/D поворачивают шарик (и камеру) — камера всегда остаётся за ним
     if (turn !== 0) {
@@ -5634,7 +5656,124 @@
 
   window.addEventListener("blur", () => {
     keys.clear();
+    resetTouchControls();
   });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) resetTouchControls();
+  });
+
+  // ---------- Сенсорное управление ----------
+  const joystickPointer = { id: null, centerX: 0, centerY: 0, radius: 1 };
+
+  function resetTouchControls() {
+    touchTurn = 0;
+    touchDrive = 0;
+    if (joystickEl && joystickPointer.id !== null) {
+      try {
+        joystickEl.releasePointerCapture(joystickPointer.id);
+      } catch (err) {
+        /* ignore */
+      }
+    }
+    joystickPointer.id = null;
+    if (joystickEl) joystickEl.classList.remove("active");
+    if (joystickKnob) joystickKnob.style.transform = "";
+    if (jumpBtn) jumpBtn.classList.remove("pressed");
+  }
+
+  function showTouchControls() {
+    if (touchUiEnabled && touchControls) touchControls.classList.remove("hidden");
+  }
+
+  function hideTouchControls() {
+    if (touchControls) touchControls.classList.add("hidden");
+    resetTouchControls();
+  }
+
+  function updateJoystick(clientX, clientY) {
+    const dx = clientX - joystickPointer.centerX;
+    const dy = clientY - joystickPointer.centerY;
+    const radius = joystickPointer.radius;
+    const dist = Math.hypot(dx, dy) || 1;
+    const scale = Math.min(1, radius / dist);
+    const x = dx * scale;
+    const y = dy * scale;
+
+    // Мёртвая зона и мягкий разгон: у центра — покой, у края — полный ход.
+    const nx = x / radius;
+    const ny = y / radius;
+    const magnitude = Math.min(1, Math.hypot(nx, ny));
+    const deadZone = 0.14;
+    let outX = 0;
+    let outY = 0;
+    if (magnitude > deadZone) {
+      const amount = (magnitude - deadZone) / (1 - deadZone);
+      outX = (nx / magnitude) * amount;
+      outY = (ny / magnitude) * amount;
+    }
+    touchTurn = Math.sign(outX) * Math.pow(Math.abs(outX), 1.25);
+    touchDrive = -Math.sign(outY) * Math.pow(Math.abs(outY), 1.25);
+
+    if (joystickKnob) {
+      joystickKnob.style.transform =
+        `translate(-50%, -50%) translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)`;
+    }
+  }
+
+  if (joystickEl) {
+    joystickEl.addEventListener("pointerdown", (e) => {
+      if (!touchUiEnabled || mode !== "playing" || helpOpen) return;
+      if (joystickPointer.id !== null) return;
+      e.preventDefault();
+
+      const rect = joystickEl.getBoundingClientRect();
+      joystickPointer.id = e.pointerId;
+      joystickPointer.centerX = rect.left + rect.width / 2;
+      joystickPointer.centerY = rect.top + rect.height / 2;
+      joystickPointer.radius = rect.width * 0.26;
+      joystickEl.classList.add("active");
+      updateJoystick(e.clientX, e.clientY);
+      try {
+        joystickEl.setPointerCapture(e.pointerId);
+      } catch (err) {
+        /* ignore */
+      }
+    });
+
+    joystickEl.addEventListener("pointermove", (e) => {
+      if (e.pointerId !== joystickPointer.id) return;
+      e.preventDefault();
+      updateJoystick(e.clientX, e.clientY);
+    });
+
+    const endJoystick = (e) => {
+      if (e.pointerId !== joystickPointer.id) return;
+      resetTouchControls();
+    };
+    joystickEl.addEventListener("pointerup", endJoystick);
+    joystickEl.addEventListener("pointercancel", endJoystick);
+    joystickEl.addEventListener("lostpointercapture", endJoystick);
+  }
+
+  if (jumpBtn) {
+    jumpBtn.addEventListener("pointerdown", (e) => {
+      if (!touchUiEnabled || mode !== "playing" || helpOpen) return;
+      e.preventDefault();
+      jumpRequested = true;
+      jumpBtn.classList.add("pressed");
+      try {
+        jumpBtn.setPointerCapture(e.pointerId);
+      } catch (err) {
+        /* ignore */
+      }
+    });
+
+    const releaseJump = () => jumpBtn.classList.remove("pressed");
+    jumpBtn.addEventListener("pointerup", releaseJump);
+    jumpBtn.addEventListener("pointercancel", releaseJump);
+    jumpBtn.addEventListener("lostpointercapture", releaseJump);
+  }
 
   // управление обзорной камерой: вращение мышью и зум колесом
   canvas.addEventListener("pointerdown", (e) => {

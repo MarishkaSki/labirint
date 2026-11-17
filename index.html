@@ -82,6 +82,25 @@
       <span class="ball-fab-label">Герой</span>
     </button>
 
+    <div id="touchControls" class="touch-controls hidden">
+      <div id="joystick" class="joystick" role="group" aria-label="Джойстик: вверх и вниз — движение, влево и вправо — поворот">
+        <svg class="joystick-hints" viewBox="0 0 100 100" aria-hidden="true">
+          <path d="M50 8l4.5 7h-9z"></path>
+          <path d="M50 92l-4.5-7h9z"></path>
+          <path d="M8 50l7-4.5v9z"></path>
+          <path d="M92 50l-7 4.5v-9z"></path>
+        </svg>
+        <div id="joystickKnob" class="joystick-knob" aria-hidden="true"></div>
+      </div>
+      <button id="jumpBtn" class="jump-btn" type="button" aria-label="Прыжок">
+        <svg viewBox="0 0 32 32" width="34" height="34" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M16 24V8"></path>
+          <path d="m9 15 7-7 7 7"></path>
+          <path d="M7 27c2.4-2 5.5-3 9-3s6.6 1 9 3" opacity="0.55"></path>
+        </svg>
+      </button>
+    </div>
+
     <div id="ballPanel" class="ball-panel" aria-label="Выбор героя">
       <div class="ball-panel-head">
         <div id="ballPreview" class="ball-preview"></div>
@@ -167,7 +186,7 @@
             <div class="help-num">2</div>
             <div>
               <b>Управление</b>
-              <p><kbd>W</kbd>/<kbd>S</kbd> — катить вперёд/назад, <kbd>A</kbd>/<kbd>D</kbd> — поворот, <kbd>Shift</kbd> — ускорение. Камера всегда летит за мячиком.</p>
+              <p><kbd>W</kbd>/<kbd>S</kbd> — катить вперёд/назад, <kbd>A</kbd>/<kbd>D</kbd> — поворот, <kbd>Shift</kbd> — ускорение. Камера всегда летит за мячиком. На сенсорном экране — джойстик справа внизу и кнопка прыжка слева внизу.</p>
             </div>
           </div>
           <div class="help-item">

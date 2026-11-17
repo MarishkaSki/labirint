@@ -54,6 +54,18 @@
     { id: "volleyball", label: "Волейбол" },
   ];
 
+  const CHARACTERS = [
+    { id: "ball", label: "Мяч", icon: "⚽", accent: "#ffd23f" },
+    { id: "cat", label: "Кошка", icon: "🐱", accent: "#b58e68" },
+    { id: "dog", label: "Собака", icon: "🐶", accent: "#a97a50" },
+    { id: "lion", label: "Лев", icon: "🦁", accent: "#e0a94b" },
+    { id: "tiger", label: "Тигр", icon: "🐯", accent: "#f08a2f" },
+    { id: "leopard", label: "Леопард", icon: "🐆", accent: "#e5c37b" },
+  ];
+
+  let playerKind = localStorage.getItem("labirint.player.v1") || "ball";
+  if (!CHARACTERS.some((c) => c.id === playerKind)) playerKind = "ball";
+
   let ballColor = "#ff7526";
   let ballPattern = "stripes";
 
@@ -74,10 +86,13 @@
   // ---------- DOM ----------
   const canvas = document.getElementById("scene");
   const hud = document.getElementById("hud");
+  const fpsEl = document.getElementById("fps");
   const timerEl = document.getElementById("timer");
   const bestEl = document.getElementById("best");
   const levelEl = document.getElementById("level");
   const keyPipsEl = document.getElementById("keyPips");
+  const boostFillEl = document.getElementById("boostFill");
+  const boostBlockEl = boostFillEl ? boostFillEl.closest(".hud-boost") : null;
   const toastEl = document.getElementById("toast");
   const previewUi = document.getElementById("preview");
   const previewLevelEl = document.getElementById("previewLevel");
@@ -107,15 +122,27 @@
   const ballPreviewEl = document.getElementById("ballPreview");
   const ballColorGrid = document.getElementById("ballColorGrid");
   const ballPatternGrid = document.getElementById("ballPatternGrid");
+  const characterGrid = document.getElementById("characterGrid");
+  const ballStyleSection = document.getElementById("ballStyleSection");
   const ballCustomColor = document.getElementById("ballCustomColor");
   const ballCloseBtn = document.getElementById("ballClose");
 
   // ---------- Рендерер и сцена ----------
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+
+  // Разрешение рендера подстраивается под фактический fps (см. adaptRenderScale).
+  const MAX_RENDER_SCALE = Math.min(window.devicePixelRatio || 1, 1.5);
+  const MIN_RENDER_SCALE = 0.7;
+  let renderScale = MAX_RENDER_SCALE;
+  renderer.setPixelRatio(renderScale);
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.shadowMap.enabled = true;
+  // PCFSoft: 16 выборок на фрагмент против 17 у PCF — дешевле и мягче.
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // Мир статичен: карту теней печём один раз на уровень, а не каждый кадр
+  // (это был самый дорогой проход — ~27 мс на кадр по замерам).
+  renderer.shadowMap.autoUpdate = false;
+  renderer.shadowMap.needsUpdate = true;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.25;
@@ -131,14 +158,21 @@
   const hemi = new THREE.HemisphereLight(0x9ac4ff, 0x121a26, 1.7);
   scene.add(hemi);
 
+  // Тени: мир статичен, поэтому карта теней рендерится один раз на уровень
+  // (renderer.shadowMap.autoUpdate = false + needsUpdate в buildMaze).
+  // Раз это разовая работа, можно позволить 2048² и весь лабиринт целиком.
+  const SHADOW_MAP_SIZE = 2048;
+  const SHADOW_HALF = 55;
+  const SHADOW_DIR = new THREE.Vector3(18, 28, 12);
+
   const dirLight = new THREE.DirectionalLight(0xcfe6ff, 2.1);
-  dirLight.position.set(18, 28, 12);
+  dirLight.position.copy(SHADOW_DIR);
   dirLight.castShadow = true;
-  dirLight.shadow.mapSize.set(2048, 2048);
-  dirLight.shadow.camera.left = -55;
-  dirLight.shadow.camera.right = 55;
-  dirLight.shadow.camera.top = 55;
-  dirLight.shadow.camera.bottom = -55;
+  dirLight.shadow.mapSize.set(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
+  dirLight.shadow.camera.left = -SHADOW_HALF;
+  dirLight.shadow.camera.right = SHADOW_HALF;
+  dirLight.shadow.camera.top = SHADOW_HALF;
+  dirLight.shadow.camera.bottom = -SHADOW_HALF;
   dirLight.shadow.camera.near = 1;
   dirLight.shadow.camera.far = 130;
   dirLight.shadow.bias = -0.0006;
@@ -152,47 +186,150 @@
   camera.add(camLight);
   scene.add(camera);
 
-  // дополнительный свет для обзорной карты
-  const previewFill = new THREE.HemisphereLight(0xffffff, 0xb8b0a0, 1.2);
-  previewFill.visible = false;
-  scene.add(previewFill);
-
   // ---------- Текстуры ----------
   function makeFloorTexture(day) {
     const c = document.createElement("canvas");
-    c.width = c.height = 128;
+    c.width = c.height = 256;
     const g = c.getContext("2d");
 
-    g.fillStyle = day ? "#c9c3b4" : "#0d1420";
-    g.fillRect(0, 0, 128, 128);
+    g.fillStyle = day ? "#b3a283" : "#2a2720";
+    g.fillRect(0, 0, 256, 256);
 
-    // лёгкий шум
-    for (let i = 0; i < 90; i++) {
+    // мягкие пятна земли
+    for (let i = 0; i < 55; i++) {
+      const x = Math.random() * 256;
+      const y = Math.random() * 256;
+      const r = 14 + Math.random() * 42;
+      const grad = g.createRadialGradient(x, y, 0, x, y, r);
       if (day) {
         const dark = Math.random() > 0.5;
-        g.fillStyle = dark ? `rgba(90, 82, 66, ${0.02 + Math.random() * 0.05})` : `rgba(255, 252, 240, ${0.05 + Math.random() * 0.08})`;
+        grad.addColorStop(0, dark ? "rgba(123, 108, 82, 0.16)" : "rgba(210, 196, 166, 0.16)");
       } else {
-        g.fillStyle = `rgba(120, 170, 220, ${Math.random() * 0.05})`;
+        grad.addColorStop(0, Math.random() > 0.5 ? "rgba(18, 20, 16, 0.35)" : "rgba(64, 63, 52, 0.18)");
       }
-      g.fillRect(Math.random() * 128, Math.random() * 128, 2, 2);
+      grad.addColorStop(1, "rgba(0,0,0,0)");
+      g.fillStyle = grad;
+      g.beginPath();
+      g.arc(x, y, r, 0, Math.PI * 2);
+      g.fill();
     }
 
-    // швы плитки
-    g.strokeStyle = day ? "rgba(128, 117, 97, 0.65)" : "rgba(62, 104, 150, 0.55)";
-    g.lineWidth = 2;
-    g.strokeRect(1, 1, 126, 126);
-
-    g.strokeStyle = day ? "rgba(158, 148, 127, 0.4)" : "rgba(30, 52, 80, 0.5)";
-    g.lineWidth = 1;
-    g.beginPath();
-    g.moveTo(64, 6);
-    g.lineTo(64, 122);
-    g.moveTo(6, 64);
-    g.lineTo(122, 64);
-    g.stroke();
+    // камешки и сухая трава
+    for (let i = 0; i < 240; i++) {
+      const x = Math.random() * 256;
+      const y = Math.random() * 256;
+      if (Math.random() < 0.22) {
+        g.strokeStyle = day ? "rgba(99, 112, 72, 0.5)" : "rgba(55, 70, 46, 0.45)";
+        g.lineWidth = 1;
+        g.beginPath();
+        g.moveTo(x, y + 3);
+        g.lineTo(x + (Math.random() - 0.5) * 3, y - 2 - Math.random() * 3);
+        g.stroke();
+      } else {
+        const stone = day ? (Math.random() > 0.5 ? "#cfc4ad" : "#8e826c") : (Math.random() > 0.5 ? "#585347" : "#1b1c18");
+        g.fillStyle = stone;
+        g.globalAlpha = 0.35 + Math.random() * 0.45;
+        g.beginPath();
+        g.ellipse(x, y, 1 + Math.random() * 3, 0.8 + Math.random() * 2, Math.random() * Math.PI, 0, Math.PI * 2);
+        g.fill();
+        g.globalAlpha = 1;
+      }
+    }
 
     const tex = new THREE.CanvasTexture(c);
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    return tex;
+  }
+
+  function makeFoliageTexture() {
+    const c = document.createElement("canvas");
+    c.width = c.height = 256;
+    const g = c.getContext("2d");
+
+    g.fillStyle = "#cfcfcf";
+    g.fillRect(0, 0, 256, 256);
+
+    for (let i = 0; i < 420; i++) {
+      const x = Math.random() * 256;
+      const y = Math.random() * 256;
+      const len = 7 + Math.random() * 16;
+      const wid = 3 + Math.random() * 7;
+      const angle = Math.random() * Math.PI;
+      const tone = 150 + ((Math.random() * 105) | 0);
+      g.save();
+      g.translate(x, y);
+      g.rotate(angle);
+      g.fillStyle = `rgb(${tone}, ${tone}, ${tone})`;
+      g.beginPath();
+      g.ellipse(0, 0, wid, len, 0, 0, Math.PI * 2);
+      g.fill();
+      g.strokeStyle = `rgba(80, 80, 80, ${0.18 + Math.random() * 0.3})`;
+      g.lineWidth = 1;
+      g.beginPath();
+      g.moveTo(0, -len);
+      g.lineTo(0, len);
+      g.stroke();
+      g.restore();
+    }
+
+    for (let i = 0; i < 700; i++) {
+      const tone = Math.random() > 0.5 ? 60 : 245;
+      g.fillStyle = `rgba(${tone}, ${tone}, ${tone}, ${0.08 + Math.random() * 0.2})`;
+      g.fillRect(Math.random() * 256, Math.random() * 256, 1 + Math.random() * 3, 1 + Math.random() * 3);
+    }
+
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(2, 2);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    return tex;
+  }
+
+  function makeLeafClusterTexture() {
+    const c = document.createElement("canvas");
+    c.width = c.height = 256;
+    const g = c.getContext("2d");
+
+    const drawLeaf = (x, y, angle, length, width, tone) => {
+      g.save();
+      g.translate(x, y);
+      g.rotate(angle);
+      g.beginPath();
+      g.moveTo(0, -length / 2);
+      g.quadraticCurveTo(width, -length * 0.1, 0, length / 2);
+      g.quadraticCurveTo(-width, -length * 0.1, 0, -length / 2);
+      g.closePath();
+      g.fillStyle = `rgb(${tone}, ${tone}, ${tone})`;
+      g.fill();
+      g.strokeStyle = "rgba(100, 100, 100, 0.45)";
+      g.lineWidth = 1.2;
+      g.beginPath();
+      g.moveTo(0, -length * 0.45);
+      g.lineTo(0, length * 0.45);
+      g.stroke();
+      g.restore();
+    };
+
+    for (let i = 0; i < 115; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = Math.random() * 92;
+      const x = 128 + Math.cos(angle) * dist;
+      const y = 128 + Math.sin(angle) * dist;
+      const tone = 170 + ((Math.random() * 85) | 0);
+      drawLeaf(
+        x,
+        y,
+        angle + Math.PI / 2 + (Math.random() - 0.5) * 1.4,
+        9 + Math.random() * 17,
+        3.5 + Math.random() * 5,
+        tone
+      );
+    }
+
+    const tex = new THREE.CanvasTexture(c);
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
     return tex;
@@ -545,6 +682,403 @@
     }
   }
 
+  const ANIMAL_PALETTES = {
+    cat: {
+      top: "#b99f80", mid: "#977a5d", bottom: "#6a503b",
+      fur: "#977a5c", light: "#f1e2cc", dark: "#453226",
+      ear: "#c98e7d", eye: "#85b35e", nose: "#cc7886", mane: null,
+    },
+    dog: {
+      top: "#cba173", mid: "#a97a50", bottom: "#6f4b2e",
+      fur: "#a97a4e", light: "#f6e5ca", dark: "#49301e",
+      ear: "#6f482b", eye: "#6b4326", nose: "#2a211b", mane: null,
+    },
+    lion: {
+      top: "#f0c46b", mid: "#dda94d", bottom: "#a66c27",
+      fur: "#dca94d", light: "#fae6bd", dark: "#6b3a17",
+      ear: "#cf9236", eye: "#c58c2e", nose: "#5d3420", mane: "#8d4a1d",
+    },
+    tiger: {
+      top: "#ffc06a", mid: "#ee8a2b", bottom: "#ac4e10",
+      fur: "#ee8a2b", light: "#fff0d0", dark: "#251a13",
+      ear: "#df7f27", eye: "#8fbe58", nose: "#3b251a", mane: null,
+    },
+    leopard: {
+      top: "#eed49a", mid: "#d9b266", bottom: "#a77d3b",
+      fur: "#d9b266", light: "#fbf0d4", dark: "#2a2118",
+      ear: "#c2964e", eye: "#9bae5b", nose: "#4a3122", mane: null,
+    },
+  };
+
+  function drawAnimalEye(g, x, y, irisColor, darkColor) {
+    g.fillStyle = "#fff9ea";
+    g.beginPath();
+    g.ellipse(x, y, 10, 11, 0, 0, Math.PI * 2);
+    g.fill();
+    g.strokeStyle = darkColor;
+    g.globalAlpha = 0.55;
+    g.lineWidth = 1.2;
+    g.stroke();
+    g.globalAlpha = 1;
+
+    g.fillStyle = irisColor;
+    g.beginPath();
+    g.ellipse(x, y, 6.5, 8, 0, 0, Math.PI * 2);
+    g.fill();
+
+    g.fillStyle = "#1d1510";
+    g.beginPath();
+    g.ellipse(x, y, 3.2, 5.2, 0, 0, Math.PI * 2);
+    g.fill();
+
+    g.fillStyle = "rgba(255,255,255,0.9)";
+    g.beginPath();
+    g.arc(x - 2, y - 3, 1.7, 0, Math.PI * 2);
+    g.fill();
+  }
+
+  function drawAnimalFace(g, cx, cy, kind) {
+    const p = ANIMAL_PALETTES[kind];
+    const isLion = kind === "lion";
+    const isDog = kind === "dog";
+    const isTiger = kind === "tiger";
+    const isLeopard = kind === "leopard";
+    const isCat = kind === "cat";
+
+    g.save();
+    g.translate(cx, cy);
+    g.lineJoin = "round";
+    g.lineCap = "round";
+
+    // львиная грива
+    if (isLion) {
+      g.fillStyle = p.mane;
+      g.strokeStyle = "rgba(90,45,15,0.55)";
+      g.lineWidth = 1.2;
+      for (let i = 0; i < 18; i++) {
+        const a = (i / 18) * Math.PI * 2;
+        const a2 = a + Math.PI / 18;
+        g.beginPath();
+        g.moveTo(Math.cos(a) * 35, Math.sin(a) * 35);
+        g.lineTo(Math.cos(a) * 58, Math.sin(a) * 58);
+        g.lineTo(Math.cos(a2) * 35, Math.sin(a2) * 35);
+        g.closePath();
+        g.fill();
+        g.stroke();
+      }
+    }
+
+    // уши
+    if (isDog) {
+      g.fillStyle = p.ear;
+      for (const side of [-1, 1]) {
+        g.save();
+        g.translate(side * 37, -3);
+        g.rotate(side * 0.22);
+        g.beginPath();
+        g.ellipse(0, 0, 13, 30, 0, 0, Math.PI * 2);
+        g.fill();
+        g.restore();
+      }
+    } else if (isLion) {
+      g.fillStyle = p.fur;
+      for (const side of [-1, 1]) {
+        g.beginPath();
+        g.arc(side * 27, -33, 9, 0, Math.PI * 2);
+        g.fill();
+      }
+    } else {
+      for (const side of [-1, 1]) {
+        g.fillStyle = p.ear;
+        g.beginPath();
+        g.moveTo(side * 11, -29);
+        g.lineTo(side * 37, -31);
+        g.lineTo(side * 25, -57);
+        g.closePath();
+        g.fill();
+        g.strokeStyle = p.dark;
+        g.lineWidth = 1.4;
+        g.stroke();
+
+        g.fillStyle = p.light;
+        g.beginPath();
+        g.moveTo(side * 18, -32);
+        g.lineTo(side * 31, -33);
+        g.lineTo(side * 25, -49);
+        g.closePath();
+        g.fill();
+      }
+    }
+
+    // голова
+    const headRx = isLion ? 36 : isDog ? 38 : 40;
+    const headRy = isLion ? 35 : 37;
+    g.fillStyle = p.fur;
+    g.beginPath();
+    g.ellipse(0, 0, headRx, headRy, 0, 0, Math.PI * 2);
+    g.fill();
+    g.strokeStyle = "rgba(40,25,15,0.35)";
+    g.lineWidth = 1.4;
+    g.stroke();
+
+    // светлая морда
+    g.fillStyle = p.light;
+    if (isDog) {
+      g.beginPath();
+      g.ellipse(0, 17, 21, 14, 0, 0, Math.PI * 2);
+      g.fill();
+    } else {
+      for (const side of [-1, 1]) {
+        g.beginPath();
+        g.ellipse(side * 8, 16, 13, 10, 0, 0, Math.PI * 2);
+        g.fill();
+      }
+    }
+
+    // глаза
+    drawAnimalEye(g, -15, -3, p.eye, p.dark);
+    drawAnimalEye(g, 15, -3, p.eye, p.dark);
+
+    // пятно у собаки
+    if (isDog) {
+      g.fillStyle = "rgba(80,48,26,0.35)";
+      g.beginPath();
+      g.ellipse(-17, -6, 15, 13, -0.2, 0, Math.PI * 2);
+      g.fill();
+      drawAnimalEye(g, -15, -3, p.eye, p.dark);
+      drawAnimalEye(g, 15, -3, p.eye, p.dark);
+    }
+
+    // полоски/пятна на морде
+    g.strokeStyle = p.dark;
+    if (isTiger) {
+      g.lineWidth = 3.5;
+      for (let i = 0; i < 3; i++) {
+        g.beginPath();
+        g.moveTo(-10 + i * 10, -30);
+        g.lineTo(-8 + i * 8, -14);
+        g.stroke();
+      }
+      for (const side of [-1, 1]) {
+        for (let i = 0; i < 3; i++) {
+          g.beginPath();
+          g.moveTo(side * (25 + i * 4), -8 + i * 8);
+          g.lineTo(side * (38 + i * 2), -5 + i * 8);
+          g.stroke();
+        }
+      }
+      g.fillStyle = p.dark;
+      g.beginPath();
+      g.moveTo(-31, -49);
+      g.lineTo(-20, -55);
+      g.lineTo(-25, -43);
+      g.closePath();
+      g.fill();
+      g.beginPath();
+      g.moveTo(31, -49);
+      g.lineTo(20, -55);
+      g.lineTo(25, -43);
+      g.closePath();
+      g.fill();
+    } else if (isCat) {
+      g.lineWidth = 2;
+      g.globalAlpha = 0.55;
+      for (let i = 0; i < 3; i++) {
+        g.beginPath();
+        g.moveTo(-9 + i * 9, -30);
+        g.lineTo(-7 + i * 7, -18);
+        g.stroke();
+      }
+      for (const side of [-1, 1]) {
+        for (let i = 0; i < 2; i++) {
+          g.beginPath();
+          g.moveTo(side * (27 + i * 4), -2 + i * 7);
+          g.lineTo(side * (37 + i * 2), -1 + i * 7);
+          g.stroke();
+        }
+      }
+      g.globalAlpha = 1;
+    } else if (isLeopard) {
+      g.lineWidth = 2.2;
+      const spots = [
+        [-28, -22, 5], [-14, -27, 4], [8, -29, 4], [24, -22, 5],
+        [-30, 4, 4], [29, 3, 4], [-20, 30, 4], [20, 30, 4],
+      ];
+      for (const [sx, sy, sr] of spots) {
+        g.beginPath();
+        g.arc(sx, sy, sr, 0.2, Math.PI * 1.7);
+        g.stroke();
+      }
+    }
+
+    // нос
+    g.fillStyle = isCat ? p.nose : p.nose;
+    if (isCat) {
+      g.beginPath();
+      g.moveTo(0, 10);
+      g.lineTo(-6, 17);
+      g.lineTo(6, 17);
+      g.closePath();
+      g.fill();
+    } else {
+      g.beginPath();
+      g.ellipse(0, 12, 7, 5, 0, 0, Math.PI * 2);
+      g.fill();
+      g.fillStyle = "rgba(255,255,255,0.18)";
+      g.beginPath();
+      g.ellipse(-2, 10.5, 2.3, 1.5, 0, 0, Math.PI * 2);
+      g.fill();
+    }
+
+    // рот
+    g.strokeStyle = "rgba(50,30,20,0.75)";
+    g.lineWidth = 1.6;
+    g.beginPath();
+    g.moveTo(0, 17);
+    g.quadraticCurveTo(-4, 23, -10, 22);
+    g.moveTo(0, 17);
+    g.quadraticCurveTo(4, 23, 10, 22);
+    g.stroke();
+
+    if (isDog) {
+      g.fillStyle = "#d9777a";
+      g.beginPath();
+      g.ellipse(0, 27, 6, 8, 0, 0, Math.PI * 2);
+      g.fill();
+    }
+
+    // усы
+    if (!isDog) {
+      g.strokeStyle = "rgba(255,250,235,0.8)";
+      g.lineWidth = 1.2;
+      for (const side of [-1, 1]) {
+        for (let i = 0; i < 3; i++) {
+          g.beginPath();
+          g.moveTo(side * 13, 17 + i * 2);
+          g.lineTo(side * (36 + i * 3), 10 + i * 8);
+          g.stroke();
+        }
+      }
+    }
+
+    g.restore();
+  }
+
+  function drawAnimalFur(g, kind, rnd) {
+    const p = ANIMAL_PALETTES[kind];
+    const grad = g.createLinearGradient(0, 0, 0, 256);
+    grad.addColorStop(0, p.top);
+    grad.addColorStop(0.5, p.mid);
+    grad.addColorStop(1, p.bottom);
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 512, 256);
+
+    if (kind === "tiger") {
+      g.strokeStyle = "rgba(35,22,14,0.72)";
+      g.lineWidth = 9;
+      for (let i = 0; i < 9; i++) {
+        const y = 18 + i * 27;
+        g.beginPath();
+        for (let x = -20; x <= 532; x += 10) {
+          const py = y + Math.sin(x * 0.025 + i * 1.7) * 8;
+          if (x === -20) g.moveTo(x, py);
+          else g.lineTo(x, py);
+        }
+        g.stroke();
+      }
+    } else if (kind === "leopard") {
+      g.strokeStyle = "rgba(40,29,20,0.7)";
+      g.lineWidth = 2.6;
+      for (let i = 0; i < 42; i++) {
+        const x = rnd() * 512;
+        const y = 18 + rnd() * 220;
+        const r = 5 + rnd() * 6;
+        g.beginPath();
+        g.arc(x, y, r, rnd() * Math.PI, Math.PI * 1.7 + rnd());
+        g.stroke();
+        g.beginPath();
+        g.arc(x + r * 0.8, y - r * 0.3, r * 0.6, 0, Math.PI * 1.5);
+        g.stroke();
+      }
+    } else if (kind === "cat") {
+      g.strokeStyle = "rgba(75,52,36,0.3)";
+      g.lineWidth = 7;
+      for (let i = 0; i < 8; i++) {
+        const y = 12 + i * 31;
+        g.beginPath();
+        for (let x = -20; x <= 532; x += 10) {
+          const py = y + Math.sin(x * 0.018 + i) * 7;
+          if (x === -20) g.moveTo(x, py);
+          else g.lineTo(x, py);
+        }
+        g.stroke();
+      }
+    } else if (kind === "dog") {
+      g.fillStyle = "rgba(83,52,28,0.2)";
+      for (let i = 0; i < 14; i++) {
+        const x = rnd() * 512;
+        const y = rnd() * 256;
+        g.beginPath();
+        g.ellipse(x, y, 10 + rnd() * 22, 8 + rnd() * 16, rnd() * Math.PI, 0, Math.PI * 2);
+        g.fill();
+      }
+    } else if (kind === "lion") {
+      g.fillStyle = "rgba(165, 96, 28, 0.14)";
+      for (let i = 0; i < 20; i++) {
+        const x = rnd() * 512;
+        const y = rnd() * 256;
+        g.beginPath();
+        g.arc(x, y, 3 + rnd() * 7, 0, Math.PI * 2);
+        g.fill();
+      }
+    }
+  }
+
+  function drawAnimalPattern(g, kind, rnd) {
+    drawAnimalFur(g, kind, rnd);
+    drawAnimalFace(g, 0, 128, kind);
+    drawAnimalFace(g, 512, 128, kind);
+    drawAnimalFace(g, 256, 128, kind);
+  }
+
+  function makeFurTexture() {
+    const c = document.createElement("canvas");
+    c.width = c.height = 256;
+    const g = c.getContext("2d");
+    g.fillStyle = "#c9c9c9";
+    g.fillRect(0, 0, 256, 256);
+
+    for (let i = 0; i < 520; i++) {
+      const x = Math.random() * 256;
+      const y = Math.random() * 256;
+      const len = 5 + Math.random() * 16;
+      const angle = -Math.PI / 2 + (Math.random() - 0.5) * 0.9;
+      const tone = 150 + ((Math.random() * 100) | 0);
+      g.strokeStyle = `rgba(${tone}, ${tone}, ${tone}, ${0.18 + Math.random() * 0.3})`;
+      g.lineWidth = 0.8 + Math.random() * 1.4;
+      g.beginPath();
+      g.moveTo(x, y);
+      g.lineTo(x + Math.cos(angle) * len, y + Math.sin(angle) * len);
+      g.stroke();
+    }
+
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(2, 2);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    return tex;
+  }
+
+  function paintBallBase(g, top, mid, bottom) {
+    const grad = g.createLinearGradient(0, 0, 0, 256);
+    grad.addColorStop(0, top);
+    grad.addColorStop(0.5, mid);
+    grad.addColorStop(1, bottom);
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 512, 256);
+  }
+
   function makeBallTexture(color, pattern) {
     const c = document.createElement("canvas");
     c.width = 512;
@@ -630,24 +1164,68 @@
         g.stroke();
       }
     } else if (pattern === "soccer") {
-      const spots = [
-        [34, 56, 27], [148, 32, 24], [262, 80, 30], [382, 42, 25], [496, 116, 29],
-        [86, 158, 27], [204, 198, 24], [330, 160, 31], [452, 214, 25], [16, 230, 22],
-      ];
-      spots.forEach(([x, y, r], i) => {
-        drawPentagon(g, x, y, r, i * 0.63, sportDark, lightBase ? "rgba(255,255,255,0.35)" : "rgba(0,0,0,0.35)");
+      paintBallBase(g, "#fdfbf4", "#f0eadb", "#d8cfba");
+      // 12 чёрных пятиугольников в вершинах икосаэдра — как у настоящего мяча
+      const p = (1 + Math.sqrt(5)) / 2;
+      const vertices = [];
+      for (const sy of [-1, 1]) {
+        for (const sz of [-1, 1]) vertices.push([0, sy, sz * p]);
+      }
+      for (const sx of [-1, 1]) {
+        for (const sy of [-1, 1]) vertices.push([sx, sy * p, 0]);
+      }
+      for (const sx of [-1, 1]) {
+        for (const sz of [-1, 1]) vertices.push([sx * p, 0, sz]);
+      }
+
+      const patchFill = "#1b1b1b";
+      const patchStroke = "rgba(255,255,255,0.7)";
+      const radius = 20;
+
+      vertices.forEach(([vx, vy, vz], index) => {
+        const len = Math.hypot(vx, vy, vz);
+        const x = vx / len;
+        const y = vy / len;
+        const z = vz / len;
+        const lat = Math.asin(y);
+        const lon = Math.atan2(x, z);
+        const u = ((lon / (Math.PI * 2) + 0.5) % 1) * 512;
+        const v = (0.5 - lat / Math.PI) * 256;
+        const hScale = Math.min(2.15, 1 / Math.max(0.46, Math.cos(lat)));
+        const rotation = index * 0.55;
+
+        for (const offset of [-512, 0, 512]) {
+          const cx = u + offset;
+          if (cx < -radius * 3 || cx > 512 + radius * 3) continue;
+          g.beginPath();
+          for (let k = 0; k < 5; k++) {
+            const a = rotation + (k * Math.PI * 2) / 5 - Math.PI / 2;
+            const px = cx + Math.cos(a) * radius * hScale;
+            const py = v + Math.sin(a) * radius;
+            if (k === 0) g.moveTo(px, py);
+            else g.lineTo(px, py);
+          }
+          g.closePath();
+          g.fillStyle = patchFill;
+          g.fill();
+          g.strokeStyle = patchStroke;
+          g.lineWidth = 2;
+          g.stroke();
+        }
       });
 
-      g.strokeStyle = lightBase ? "rgba(60,60,60,0.28)" : "rgba(255,255,255,0.2)";
-      g.lineWidth = 2;
-      for (let i = 0; i < 5; i++) {
+      // тонкие швы по поверхности
+      g.strokeStyle = "rgba(70,70,70,0.15)";
+      g.lineWidth = 1.5;
+      for (let i = 0; i < 4; i++) {
         g.beginPath();
-        g.moveTo(-20, 20 + i * 48);
-        g.bezierCurveTo(150, 60 + i * 46, 360, 200 - i * 36, 540, 230 - i * 44);
+        g.moveTo(-20, 34 + i * 62);
+        g.bezierCurveTo(160, 90 + i * 50, 350, 160 - i * 38, 532, 218 - i * 58);
         g.stroke();
       }
     } else if (pattern === "basketball") {
-      const seam = lightBase ? "#2a170a" : "#f0efea";
+      paintBallBase(g, "#ffb366", "#e87a23", "#a9470e");
+      const seam = "#2b1709";
       g.strokeStyle = rgbaOf(seam, 0.85);
       g.lineWidth = 6;
       g.beginPath();
@@ -675,12 +1253,13 @@
 
       // «пупырышки»
       for (let i = 0; i < 150; i++) {
-        g.fillStyle = rgbaOf(dark, 0.14);
+        g.fillStyle = "rgba(70,32,10,0.14)";
         g.beginPath();
         g.arc(rnd() * 512, rnd() * 256, 1.5 + rnd() * 1.5, 0, Math.PI * 2);
         g.fill();
       }
     } else if (pattern === "tennis") {
+      paintBallBase(g, "#f2f77e", "#d9e548", "#a9b92c");
       const drawSeam = () => {
         g.beginPath();
         g.moveTo(-20, 62);
@@ -696,7 +1275,7 @@
       g.strokeStyle = "rgba(0,0,0,0.18)";
       g.lineWidth = 11;
       drawSeam();
-      g.strokeStyle = sportLight;
+      g.strokeStyle = "#fffdf0";
       g.lineWidth = 6;
       drawSeam();
 
@@ -706,8 +1285,9 @@
         g.fillRect(rnd() * 512, rnd() * 256, 1.5, 1.5);
       }
     } else if (pattern === "volleyball") {
-      const seam = lightBase ? "#ffffff" : "#f4f4f4";
-      const panel = rgbaOf(shade(color, -0.35), 0.55);
+      paintBallBase(g, "#fefdf8", "#f3efe4", "#d9d4c4");
+      const seam = "#ffffff";
+      const panel = "rgba(58, 118, 166, 0.6)";
       g.lineCap = "round";
 
       const curves = [
@@ -731,6 +1311,14 @@
         c2();
         g.stroke();
       }
+    } else if (
+      pattern === "cat" ||
+      pattern === "dog" ||
+      pattern === "lion" ||
+      pattern === "tiger" ||
+      pattern === "leopard"
+    ) {
+      drawAnimalPattern(g, pattern, rnd);
     }
 
     // лёгкая фактура
@@ -748,8 +1336,8 @@
   // ---------- Материалы и общие геометрии ----------
   const floorTexNight = makeFloorTexture(false);
   const floorTexDay = makeFloorTexture(true);
-  floorTexNight.repeat.set(COLS, ROWS);
-  floorTexDay.repeat.set(COLS, ROWS);
+  floorTexNight.repeat.set(COLS / 3, ROWS / 3);
+  floorTexDay.repeat.set(COLS / 3, ROWS / 3);
 
   const wallTexNight = makeWallTexture(false);
   const wallTexDay = makeWallTexture(true);
@@ -790,6 +1378,111 @@
     emissiveIntensity: 0.9,
   });
   const trimMat = new THREE.MeshBasicMaterial({ color: 0x2a6678, side: THREE.DoubleSide });
+
+  // ---------- Живые изгороди, кусты и домики ----------
+  const foliageTex = makeFoliageTexture();
+  const leafClusterTex = makeLeafClusterTexture();
+
+  const hedgeBaseGeo = new THREE.BoxGeometry(CELL * 0.97, 0.68, CELL * 0.97);
+  // Lambert вместо Standard: для матовой листвы разницы почти нет,
+  // но фрагментный шейдер заметно дешевле (нет PBR-математики).
+  const hedgeBaseMat = new THREE.MeshLambertMaterial({
+    map: foliageTex,
+    color: 0xffffff,
+  });
+
+  // Сфера 6×4 = 36 треугольников против 80 у icosahedron(…, 1):
+  // силуэт остаётся округлым, а вершин в 2.2 раза меньше.
+  const foliageGeo = new THREE.SphereGeometry(0.62, 6, 4);
+  {
+    const fp = foliageGeo.attributes.position;
+    for (let i = 0; i < fp.count; i++) {
+      const vx = fp.getX(i);
+      const vy = fp.getY(i);
+      const vz = fp.getZ(i);
+      // смещение зависит только от координат, поэтому общие вершины не расходятся
+      const f =
+        1 +
+        Math.sin(vx * 9 + vy * 7 + vz * 11) * 0.07 +
+        Math.sin(vx * 4.3 + vz * 5.7) * 0.04;
+      fp.setXYZ(i, vx * f, vy * f, vz * f);
+    }
+    fp.needsUpdate = true;
+    foliageGeo.computeVertexNormals();
+  }
+  const foliageMat = new THREE.MeshLambertMaterial({
+    map: foliageTex,
+    color: 0xffffff,
+  });
+
+  const leafCardGeo = new THREE.PlaneGeometry(1, 1);
+  const leafCardMat = new THREE.MeshLambertMaterial({
+    map: leafClusterTex,
+    alphaTest: 0.38,
+    side: THREE.DoubleSide,
+  });
+
+  const houseBodyGeo = new THREE.BoxGeometry(1.8, 1.0, 1.8);
+  const houseBodyMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    roughness: 0.88,
+    metalness: 0.02,
+  });
+
+  const houseRoofGeo = new THREE.ConeGeometry(1.33, 0.82, 4, 1);
+  houseRoofGeo.rotateY(Math.PI / 4);
+  const houseFlatRoofGeo = new THREE.BoxGeometry(1, 1, 1);
+  const houseSpireGeo = new THREE.ConeGeometry(0.16, 0.7, 8);
+  const houseGableRoofGeo = (() => {
+    const A = [-0.5, 0, -0.5];
+    const B = [0.5, 0, -0.5];
+    const C = [-0.5, 0, 0.5];
+    const D = [0.5, 0, 0.5];
+    const E = [0, 1, -0.5];
+    const F = [0, 1, 0.5];
+    const verts = [A, B, C, D, E, F];
+    const indices = [
+      0, 2, 5, 0, 5, 4, // левый скат
+      1, 5, 3, 1, 4, 5, // правый скат
+      0, 4, 1, // передний фронтон
+      2, 3, 5, // задний фронтон
+    ];
+    const g = new THREE.BufferGeometry();
+    const positions = [];
+    for (const idx of indices) positions.push(...verts[idx]);
+    g.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    g.computeVertexNormals();
+    return g;
+  })();
+  const houseRoofMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    roughness: 0.82,
+    metalness: 0.03,
+    side: THREE.DoubleSide,
+  });
+
+  const houseWindowGeo = new THREE.BoxGeometry(1, 1, 1);
+  const houseWindowMat = new THREE.MeshStandardMaterial({
+    color: 0x3a2b16,
+    emissive: 0xffb45a,
+    emissiveIntensity: 1.1,
+    roughness: 0.25,
+    metalness: 0.1,
+  });
+
+  const houseDoorGeo = new THREE.BoxGeometry(1, 1, 1);
+  const houseDoorMat = new THREE.MeshStandardMaterial({
+    color: 0x5d3b22,
+    roughness: 0.85,
+    metalness: 0.02,
+  });
+
+  const houseChimneyGeo = new THREE.BoxGeometry(0.18, 0.5, 0.18);
+  const houseChimneyMat = new THREE.MeshStandardMaterial({
+    color: 0x7a4a3a,
+    roughness: 0.9,
+    metalness: 0.02,
+  });
 
   // ---------- Земля ----------
   const ground = new THREE.Mesh(
@@ -867,7 +1560,7 @@
 
   // ---------- Шарик ----------
   const ball = new THREE.Mesh(
-    new THREE.SphereGeometry(BALL_R, 48, 32),
+    new THREE.SphereGeometry(BALL_R, 32, 24),
     new THREE.MeshStandardMaterial({
       map: makeBallTexture(ballColor, ballPattern),
       color: 0xffffff,
@@ -877,13 +1570,535 @@
       emissiveIntensity: 0.28,
     })
   );
-  ball.castShadow = true;
+  // тень мячика/героя рисует отдельная «пятно»-плоскость (см. heroShadow):
+  // так карту теней можно печь один раз, а не пересчитывать каждый кадр
+  ball.castShadow = false;
   ball.receiveShadow = true;
   scene.add(ball);
 
   const ballLight = new THREE.PointLight(shade(ballColor, 0.18), 16, 8, 2);
   ballLight.position.set(0, 0.7, 0);
   ball.add(ballLight);
+
+  // Мягкое пятно-тень под героем: динамическую тень мячика/животного
+  // печь в статичную карту нельзя (она бы «застыла» на старте).
+  function makeHeroShadowTexture() {
+    const c = document.createElement("canvas");
+    c.width = c.height = 128;
+    const g = c.getContext("2d");
+    const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+    grad.addColorStop(0, "rgba(0,0,0,0.62)");
+    grad.addColorStop(0.45, "rgba(0,0,0,0.36)");
+    grad.addColorStop(1, "rgba(0,0,0,0)");
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 128, 128);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  const heroShadow = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({
+      map: makeHeroShadowTexture(),
+      transparent: true,
+      depthWrite: false,
+      opacity: 0.85,
+    })
+  );
+  heroShadow.rotation.x = -Math.PI / 2;
+  heroShadow.position.y = 0.075;
+  heroShadow.renderOrder = 2;
+  scene.add(heroShadow);
+
+  // ---------- Животные-герои ----------
+  const animalFurTex = makeFurTexture();
+  const animalGroups = {};
+
+  function createAnimalCharacter(kind) {
+    const p = ANIMAL_PALETTES[kind];
+    const group = new THREE.Group();
+    const isDog = kind === "dog";
+    const isLion = kind === "lion";
+    const isTiger = kind === "tiger";
+    const isLeopard = kind === "leopard";
+    const isCat = kind === "cat";
+
+    const furMat = new THREE.MeshStandardMaterial({
+      color: p.fur,
+      map: animalFurTex,
+      bumpMap: animalFurTex,
+      bumpScale: 0.025,
+      roughness: 0.92,
+      metalness: 0,
+    });
+    const lightMat = new THREE.MeshStandardMaterial({
+      color: p.light,
+      map: animalFurTex,
+      bumpMap: animalFurTex,
+      bumpScale: 0.018,
+      roughness: 0.9,
+      metalness: 0,
+    });
+    const darkMat = new THREE.MeshStandardMaterial({ color: p.dark, roughness: 0.88, metalness: 0 });
+    const earMat = new THREE.MeshStandardMaterial({ color: p.ear, roughness: 0.92, metalness: 0 });
+    const maneMat = new THREE.MeshStandardMaterial({ color: p.mane || p.dark, roughness: 0.95, metalness: 0 });
+
+    const addMesh = (mesh, parent = group) => {
+      // тень героя рисует пятно (heroShadow) — в статичную карту теней его не печём
+      mesh.castShadow = false;
+      mesh.receiveShadow = true;
+      parent.add(mesh);
+      return mesh;
+    };
+
+    // тело и бёдра
+    const body = addMesh(new THREE.Mesh(new THREE.SphereGeometry(1, 20, 16), furMat));
+    body.scale.set(0.24, 0.25, 0.4);
+    body.position.y = 0.46;
+
+    for (const side of [-1, 1]) {
+      const haunch = addMesh(new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), furMat));
+      haunch.scale.set(0.15, 0.18, 0.21);
+      haunch.position.set(side * 0.14, 0.35, 0.18);
+    }
+
+    const chest = addMesh(new THREE.Mesh(new THREE.SphereGeometry(1, 14, 10), lightMat));
+    chest.scale.set(0.16, 0.18, 0.13);
+    chest.position.set(0, 0.37, -0.25);
+
+    const neck = addMesh(new THREE.Mesh(new THREE.SphereGeometry(1, 14, 10), furMat));
+    neck.scale.set(0.15, 0.17, 0.16);
+    neck.position.set(0, 0.58, -0.23);
+
+    // голова
+    const head = new THREE.Group();
+    head.position.set(0, 0.67, -0.35);
+    group.add(head);
+
+    const headMesh = addMesh(
+      new THREE.Mesh(new THREE.SphereGeometry(0.19, 20, 16), furMat),
+      head
+    );
+    headMesh.scale.set(1, 0.95, 1);
+
+    const snout = addMesh(
+      new THREE.Mesh(new THREE.SphereGeometry(0.11, 16, 12), lightMat),
+      head
+    );
+    snout.position.set(0, -0.055, -0.145);
+    snout.scale.set(0.9, 0.72, 1.2);
+
+    for (const side of [-1, 1]) {
+      const eyeWhite = addMesh(
+        new THREE.Mesh(new THREE.SphereGeometry(0.041, 10, 8), lightMat),
+        head
+      );
+      eyeWhite.position.set(side * 0.072, 0.04, -0.16);
+      eyeWhite.scale.z = 0.62;
+
+      const iris = addMesh(
+        new THREE.Mesh(new THREE.SphereGeometry(0.024, 10, 8), new THREE.MeshStandardMaterial({
+          color: p.eye,
+          roughness: 0.3,
+          metalness: 0.05,
+        })),
+        head
+      );
+      iris.position.set(side * 0.074, 0.04, -0.185);
+
+      const pupil = addMesh(
+        new THREE.Mesh(new THREE.SphereGeometry(0.011, 8, 6), darkMat),
+        head
+      );
+      pupil.position.set(side * 0.075, 0.04, -0.202);
+    }
+
+    const nose = addMesh(
+      new THREE.Mesh(new THREE.SphereGeometry(0.03, 10, 8), new THREE.MeshStandardMaterial({
+        color: p.nose,
+        roughness: 0.5,
+      })),
+      head
+    );
+    nose.position.set(0, -0.08, -0.245);
+    nose.scale.set(1.25, 0.8, 1);
+
+    const mouth = addMesh(
+      new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.008, 0.012), darkMat),
+      head
+    );
+    mouth.position.set(0, -0.12, -0.245);
+
+    // уши / грива
+    if (isDog) {
+      for (const side of [-1, 1]) {
+        const ear = addMesh(new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 8), earMat), head);
+        ear.position.set(side * 0.165, -0.005, -0.02);
+        ear.scale.set(0.52, 1.35, 0.8);
+        ear.rotation.z = side * 0.28;
+      }
+      const patch = addMesh(new THREE.Mesh(new THREE.SphereGeometry(0.105, 10, 8), earMat), head);
+      patch.position.set(-0.065, 0.09, -0.14);
+      patch.scale.set(0.85, 0.85, 0.32);
+    } else if (isLion) {
+      const mane = addMesh(
+        new THREE.Mesh(new THREE.TorusGeometry(0.235, 0.085, 8, 20), maneMat),
+        head
+      );
+      mane.position.z = -0.045;
+      for (const side of [-1, 1]) {
+        const ear = addMesh(new THREE.Mesh(new THREE.SphereGeometry(0.068, 8, 6), earMat), head);
+        ear.position.set(side * 0.115, 0.155, -0.025);
+      }
+      const chinTuft = addMesh(new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.11, 6), maneMat), head);
+      chinTuft.position.set(0, -0.19, -0.09);
+      chinTuft.rotation.x = Math.PI;
+    } else {
+      for (const side of [-1, 1]) {
+        const ear = addMesh(new THREE.Mesh(new THREE.ConeGeometry(0.075, 0.17, 4), earMat), head);
+        ear.position.set(side * 0.1, 0.17, -0.01);
+        ear.rotation.z = side * 0.18;
+        const inner = addMesh(new THREE.Mesh(new THREE.ConeGeometry(0.043, 0.1, 4), lightMat), head);
+        inner.position.set(side * 0.098, 0.16, -0.035);
+        inner.rotation.z = side * 0.18;
+      }
+    }
+
+    // усы
+    if (!isDog) {
+      for (const side of [-1, 1]) {
+        for (let i = 0; i < 3; i++) {
+          const whisker = addMesh(
+            new THREE.Mesh(new THREE.CylinderGeometry(0.0022, 0.0015, 0.17, 3), lightMat),
+            head
+          );
+          whisker.rotation.z = Math.PI / 2 + side * 0.12 * (i - 1);
+          whisker.rotation.y = side * 0.12;
+          whisker.position.set(side * (0.13 + i * 0.005), -0.075 + i * 0.015, -0.17);
+        }
+      }
+    }
+
+    // лапы
+    const legs = [];
+    const legOffsets = [0, Math.PI, Math.PI, 0];
+    const legPositions = [
+      [-0.13, -0.18],
+      [0.13, -0.18],
+      [-0.13, 0.19],
+      [0.13, 0.19],
+    ];
+    legPositions.forEach(([lx, lz], index) => {
+      const leg = new THREE.Group();
+      leg.position.set(lx, 0.39, lz);
+      const thigh = addMesh(new THREE.Mesh(new THREE.SphereGeometry(1, 10, 8), furMat), leg);
+      thigh.scale.set(0.075, 0.12, 0.1);
+      const shin = addMesh(
+        new THREE.Mesh(new THREE.CylinderGeometry(0.046, 0.034, 0.33, 7), furMat),
+        leg
+      );
+      shin.position.y = -0.165;
+      const paw = addMesh(new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 6), earMat), leg);
+      paw.position.set(0, -0.335, -0.02);
+      paw.scale.set(1, 0.68, 1.3);
+      group.add(leg);
+      legs.push({ group: leg, offset: legOffsets[index] });
+    });
+
+    // хвост из изогнутой трубки
+    const tail = new THREE.Group();
+    tail.position.set(0, 0.55, 0.33);
+    group.add(tail);
+
+    const tailPoints = isDog
+      ? [new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0.02, 0.1), new THREE.Vector3(0, 0.08, 0.17)]
+      : isLion
+        ? [new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0.08, 0.13), new THREE.Vector3(0, 0.25, 0.19), new THREE.Vector3(0, 0.37, 0.1)]
+        : [new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0.1, 0.14), new THREE.Vector3(0, 0.3, 0.2), new THREE.Vector3(0, 0.46, 0.08)];
+    const tailCurve = new THREE.CatmullRomCurve3(tailPoints);
+    const tailMesh = addMesh(
+      new THREE.Mesh(new THREE.TubeGeometry(tailCurve, 10, isDog ? 0.032 : 0.035, 6, false), furMat),
+      tail
+    );
+    if (isLion) {
+      const end = tailCurve.getPoint(1);
+      const tuft = addMesh(new THREE.Mesh(new THREE.SphereGeometry(0.072, 8, 6), maneMat), tail);
+      tuft.position.copy(end);
+    }
+
+    // полоски и пятна
+    if (isTiger || isCat) {
+      const stripeMat = new THREE.MeshStandardMaterial({ color: p.dark, roughness: 0.9 });
+      const count = isTiger ? 5 : 3;
+      for (let i = 0; i < count; i++) {
+        const z = -0.26 + (i * 0.52) / (count - 1);
+        const shrink = Math.sqrt(Math.max(0.08, 1 - (z / 0.4) ** 2));
+        const ring = addMesh(
+          new THREE.Mesh(
+            new THREE.TorusGeometry(0.246, isTiger ? 0.022 : 0.012, 6, 18),
+            stripeMat
+          )
+        );
+        ring.position.set(0, 0.46, z);
+        ring.scale.set(shrink, shrink, 1);
+      }
+
+      if (isTiger) {
+        for (const side of [-1, 1]) {
+          for (let i = 0; i < 2; i++) {
+            const stripe = addMesh(
+              new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.07, 0.045), stripeMat),
+              head
+            );
+            stripe.position.set(side * (0.1 + i * 0.05), -0.01 + i * 0.03, -0.14);
+          }
+        }
+        for (let i = 0; i < 3; i++) {
+          const stripe = addMesh(
+            new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.06, 0.02), stripeMat),
+            head
+          );
+          stripe.position.set(-0.045 + i * 0.045, 0.12, -0.18);
+        }
+      }
+    } else if (isLeopard) {
+      const spotMat = new THREE.MeshStandardMaterial({ color: p.dark, roughness: 0.9 });
+      const rnd = makeRandom(431);
+      for (let i = 0; i < 22; i++) {
+        const z = -0.33 + rnd() * 0.66;
+        const shrink = Math.sqrt(Math.max(0.1, 1 - (z / 0.42) ** 2));
+        const side = i % 2 === 0 ? -1 : 1;
+        const angle = rnd() * Math.PI;
+        const spot = addMesh(new THREE.Mesh(new THREE.SphereGeometry(0.045, 6, 5), spotMat));
+        spot.position.set(
+          side * Math.cos(angle) * 0.236 * shrink,
+          0.46 + Math.sin(angle) * 0.245 * shrink,
+          z
+        );
+        spot.scale.set(0.9, 0.8, 0.35);
+        spot.rotation.z = angle;
+      }
+      for (const side of [-1, 1]) {
+        const spot = addMesh(new THREE.Mesh(new THREE.SphereGeometry(0.035, 6, 5), spotMat), head);
+        spot.position.set(side * 0.12, 0.08, -0.14);
+        spot.scale.set(0.9, 0.8, 0.35);
+      }
+    } else if (isDog) {
+      const saddle = addMesh(new THREE.Mesh(new THREE.SphereGeometry(1, 12, 8), earMat));
+      saddle.scale.set(0.18, 0.045, 0.28);
+      saddle.position.set(0, 0.69, 0.05);
+    }
+
+    group.visible = false;
+    group.scale.setScalar(isLion ? 1.08 : isCat ? 0.96 : 1.0);
+    group.userData = { kind, legs, tail, head, phase: 0 };
+    scene.add(group);
+    animalGroups[kind] = group;
+    return group;
+  }
+
+  for (const kind of ["cat", "dog", "lion", "tiger", "leopard"]) {
+    createAnimalCharacter(kind);
+  }
+
+  // ---------- Пять главных ориентиров ----------
+  const landmarkGroups = {};
+  const landmarkBeacons = [];
+  let windmillBlades = null;
+
+  function addLandmarkMesh(parent, geo, mat, x, y, z, sx = 1, sy = 1, sz = 1, rx = 0, ry = 0, rz = 0) {
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(x, y, z);
+    mesh.scale.set(sx, sy, sz);
+    mesh.rotation.set(rx, ry, rz);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    parent.add(mesh);
+    return mesh;
+  }
+
+  function createLandmarks() {
+    const beaconTex = makeStarTexture();
+    const stone = new THREE.MeshStandardMaterial({ color: 0xe3d7c0, roughness: 0.9 });
+    const stoneDark = new THREE.MeshStandardMaterial({ color: 0x9a8f7a, roughness: 0.95 });
+    const marble = new THREE.MeshStandardMaterial({ color: 0xf2ebdc, roughness: 0.75 });
+    const wood = new THREE.MeshStandardMaterial({ color: 0x6f4d31, roughness: 0.86 });
+    const woodDark = new THREE.MeshStandardMaterial({ color: 0x4d3422, roughness: 0.9 });
+    const roofRed = new THREE.MeshStandardMaterial({ color: 0x9f4d32, roughness: 0.82 });
+    const roofGreen = new THREE.MeshStandardMaterial({ color: 0x466256, roughness: 0.8 });
+    const gold = new THREE.MeshStandardMaterial({ color: 0xd9ad45, roughness: 0.35, metalness: 0.55 });
+    const darkOpening = new THREE.MeshBasicMaterial({ color: 0x2c241c });
+    const warmWindow = new THREE.MeshBasicMaterial({ color: 0xffd27a });
+    const cityGlass = new THREE.MeshStandardMaterial({
+      color: 0x5a91b5,
+      roughness: 0.16,
+      metalness: 0.52,
+      emissive: 0x0a2638,
+      emissiveIntensity: 0.55,
+    });
+    const cityGlass2 = new THREE.MeshStandardMaterial({
+      color: 0x76a9c6,
+      roughness: 0.14,
+      metalness: 0.5,
+      emissive: 0x0a2434,
+      emissiveIntensity: 0.5,
+    });
+    const cityBand = new THREE.MeshBasicMaterial({
+      color: 0xc6f1ff,
+      transparent: true,
+      opacity: 0.72,
+    });
+    const redLight = new THREE.MeshBasicMaterial({ color: 0xff5544 });
+
+    const addBeacon = (group, color, y, scale = 1.5) => {
+      const sprite = new THREE.Sprite(
+        new THREE.SpriteMaterial({
+          map: beaconTex,
+          color,
+          transparent: true,
+          opacity: 0.9,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          fog: false,
+        })
+      );
+      sprite.position.set(0, y, 0);
+      sprite.scale.set(scale, scale, 1);
+      group.add(sprite);
+      landmarkBeacons.push({ sprite, baseScale: scale, phase: Math.random() * Math.PI * 2 });
+    };
+
+    const addCross = (group, x, y, z, scale = 1) => {
+      addLandmarkMesh(group, new THREE.BoxGeometry(0.06, 0.55, 0.06), gold, x, y, z, scale, scale, scale);
+      addLandmarkMesh(group, new THREE.BoxGeometry(0.3, 0.055, 0.06), gold, x, y + 0.1, z, scale, scale, scale);
+    };
+
+    // 1. Мельница
+    {
+      const g = new THREE.Group();
+      addLandmarkMesh(g, new THREE.CylinderGeometry(0.55, 0.82, 3.3, 8), stone, 0, 1.65, 0);
+      addLandmarkMesh(g, new THREE.ConeGeometry(0.72, 0.85, 8), woodDark, 0, 3.72, 0);
+      addLandmarkMesh(g, new THREE.BoxGeometry(0.34, 0.6, 0.08), wood, 0, 0.3, -0.73);
+      for (const side of [-1, 1]) {
+        addLandmarkMesh(g, new THREE.BoxGeometry(0.24, 0.3, 0.06), warmWindow, side * 0.45, 1.75, -0.63);
+      }
+      const blades = new THREE.Group();
+      blades.position.set(0, 2.85, -0.8);
+      for (let i = 0; i < 4; i++) {
+        const pivot = new THREE.Group();
+        pivot.rotation.z = i * Math.PI / 2;
+        addLandmarkMesh(pivot, new THREE.BoxGeometry(0.18, 1.55, 0.07), wood, 0, 0.78, 0);
+        addLandmarkMesh(pivot, new THREE.BoxGeometry(0.32, 0.9, 0.04), woodDark, 0, 0.72, 0.045);
+        blades.add(pivot);
+      }
+      addLandmarkMesh(blades, new THREE.CylinderGeometry(0.12, 0.12, 0.16, 8), woodDark, 0, 0, 0, 1, 1, 1, Math.PI / 2);
+      g.add(blades);
+      windmillBlades = blades;
+      addBeacon(g, 0xffca6a, 4.45, 1.7);
+      g.visible = false;
+      scene.add(g);
+      landmarkGroups.windmill = g;
+    }
+
+    // 2. Колокольня
+    {
+      const g = new THREE.Group();
+      addLandmarkMesh(g, new THREE.BoxGeometry(1.25, 3.7, 1.25), stone, 0, 1.85, 0);
+      addLandmarkMesh(g, new THREE.BoxGeometry(1.4, 0.18, 1.4), stoneDark, 0, 3.76, 0);
+      for (const sx of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          addLandmarkMesh(g, new THREE.CylinderGeometry(0.075, 0.075, 0.9, 8), marble, sx * 0.45, 4.25, sz * 0.45);
+        }
+      }
+      for (const side of [-1, 1]) {
+        addLandmarkMesh(g, new THREE.BoxGeometry(0.62, 0.7, 0.05), darkOpening, 0, 4.2, side * 0.64);
+        addLandmarkMesh(g, new THREE.BoxGeometry(0.05, 0.7, 0.62), darkOpening, side * 0.64, 4.2, 0);
+      }
+      addLandmarkMesh(g, new THREE.BoxGeometry(1.32, 0.16, 1.32), stoneDark, 0, 4.76, 0);
+      addLandmarkMesh(g, new THREE.ConeGeometry(0.88, 0.78, 4), roofGreen, 0, 5.23, 0, 1, 1, 1, 0, Math.PI / 4);
+      addLandmarkMesh(g, new THREE.SphereGeometry(0.31, 12, 8), gold, 0, 5.8, 0, 1, 1.2, 1);
+      addLandmarkMesh(g, new THREE.CylinderGeometry(0.035, 0.025, 0.5, 6), gold, 0, 6.16, 0);
+      addCross(g, 0, 6.5, 0, 1.1);
+      addLandmarkMesh(g, new THREE.BoxGeometry(0.34, 0.6, 0.06), wood, 0, 0.3, -0.64);
+      addBeacon(g, 0xffdd8a, 6.85, 1.5);
+      g.visible = false;
+      scene.add(g);
+      landmarkGroups.bell = g;
+    }
+
+    // 3. Церковь
+    {
+      const g = new THREE.Group();
+      addLandmarkMesh(g, new THREE.BoxGeometry(1.65, 1.05, 1.15), stone, 0, 0.525, 0.2);
+      addLandmarkMesh(g, houseGableRoofGeo, roofGreen, 0, 1.05, 0.2, 1.8, 0.62, 1.3);
+      addLandmarkMesh(g, new THREE.BoxGeometry(0.7, 3.25, 0.7), stone, -0.48, 1.625, -0.32);
+      addLandmarkMesh(g, new THREE.ConeGeometry(0.56, 0.68, 4), roofGreen, -0.48, 3.58, -0.32, 1, 1, 1, 0, Math.PI / 4);
+      addLandmarkMesh(g, new THREE.SphereGeometry(0.26, 12, 8), gold, -0.48, 4.0, -0.32, 1, 1.2, 1);
+      addLandmarkMesh(g, new THREE.CylinderGeometry(0.03, 0.02, 0.45, 6), gold, -0.48, 4.35, -0.32);
+      addCross(g, -0.48, 4.68, -0.32, 0.9);
+      for (const side of [-1, 1]) {
+        addLandmarkMesh(g, new THREE.BoxGeometry(0.32, 0.4, 0.04), darkOpening, side * 0.35, 0.48, -0.38);
+        addLandmarkMesh(g, new THREE.BoxGeometry(0.24, 0.32, 0.04), warmWindow, side * 0.3, 0.52, 0.78);
+      }
+      addLandmarkMesh(g, new THREE.BoxGeometry(0.3, 0.56, 0.06), wood, 0.3, 0.28, -0.38);
+      addBeacon(g, 0xffe0a0, 4.95, 1.5);
+      g.visible = false;
+      scene.add(g);
+      landmarkGroups.church = g;
+    }
+
+    // 4. Храм
+    {
+      const g = new THREE.Group();
+      addLandmarkMesh(g, new THREE.BoxGeometry(1.9, 0.18, 1.9), marble, 0, 0.09, 0);
+      addLandmarkMesh(g, new THREE.BoxGeometry(1.66, 0.12, 1.66), stoneDark, 0, 0.24, 0);
+      const columns = [
+        [-0.65, -0.55], [0, -0.55], [0.65, -0.55],
+        [-0.65, 0.55], [0, 0.55], [0.65, 0.55],
+      ];
+      for (const [cx, cz] of columns) {
+        addLandmarkMesh(g, new THREE.CylinderGeometry(0.085, 0.1, 2.15, 10), marble, cx, 1.35, cz);
+      }
+      addLandmarkMesh(g, new THREE.BoxGeometry(1.78, 0.27, 1.55), marble, 0, 2.55, 0);
+      addLandmarkMesh(g, houseGableRoofGeo, roofRed, 0, 2.68, 0, 1.86, 0.55, 1.62);
+      addLandmarkMesh(g, new THREE.CylinderGeometry(0.47, 0.5, 0.4, 12), marble, 0, 3.22, 0);
+      addLandmarkMesh(g, new THREE.SphereGeometry(0.52, 14, 10), gold, 0, 3.65, 0, 1, 0.85, 1);
+      addLandmarkMesh(g, new THREE.CylinderGeometry(0.045, 0.03, 0.65, 6), gold, 0, 4.15, 0);
+      addLandmarkMesh(g, new THREE.SphereGeometry(0.1, 8, 6), gold, 0, 4.52, 0);
+      addBeacon(g, 0xffd872, 4.75, 1.5);
+      g.visible = false;
+      scene.add(g);
+      landmarkGroups.temple = g;
+    }
+
+    // 5. Москва Сити
+    {
+      const g = new THREE.Group();
+      const towers = [
+        { x: -0.35, z: -0.2, w: 0.62, h: 4.6, topH: 0.8, topW: 0.45, ant: 1.0, mat: cityGlass },
+        { x: 0.42, z: 0.3, w: 0.5, h: 3.55, topH: 0.5, topW: 0.36, ant: 0.7, mat: cityGlass2 },
+        { x: 0.32, z: -0.44, w: 0.42, h: 2.6, topH: 0.36, topW: 0.3, ant: 0.45, mat: cityGlass },
+      ];
+      for (const t of towers) {
+        addLandmarkMesh(g, new THREE.BoxGeometry(t.w, t.h, t.w), t.mat, t.x, t.h / 2, t.z);
+        addLandmarkMesh(g, new THREE.BoxGeometry(t.topW, t.topH, t.topW), t.mat, t.x, t.h + t.topH / 2, t.z);
+        addLandmarkMesh(g, new THREE.CylinderGeometry(0.025, 0.018, t.ant, 6), marble, t.x, t.h + t.topH + t.ant / 2, t.z);
+        for (let row = 1; row <= 5; row++) {
+          const yy = (t.h * row) / 6;
+          addLandmarkMesh(g, new THREE.BoxGeometry(t.w + 0.012, 0.035, t.w + 0.012), cityBand, t.x, yy, t.z);
+        }
+        const red = addLandmarkMesh(g, new THREE.SphereGeometry(0.06, 6, 4), redLight, t.x, t.h + t.topH + t.ant, t.z);
+        red.castShadow = false;
+      }
+      addBeacon(g, 0x8fe8ff, 6.65, 1.7);
+      g.visible = false;
+      scene.add(g);
+      landmarkGroups.city = g;
+    }
+  }
+
+  createLandmarks();
 
   // ---------- Выход ----------
   const goalGroup = new THREE.Group();
@@ -911,10 +2126,6 @@
   goalRing.position.y = 0.06;
   goalGroup.add(goalRing);
 
-  const goalLight = new THREE.PointLight(0x40ffbe, 22, 11, 2);
-  goalLight.position.y = 1;
-  goalGroup.add(goalLight);
-
   // ---------- Ключи ----------
   const keyGeo = new THREE.OctahedronGeometry(0.27, 0);
   const keyMat = new THREE.MeshStandardMaterial({
@@ -941,12 +2152,10 @@
     const ring = new THREE.Mesh(keyRingGeo, keyRingMat);
     ring.rotation.x = Math.PI / 2;
     ring.position.y = 0.035;
-    const light = new THREE.PointLight(0xffc04a, 8, 6, 2);
-    light.position.y = 0.8;
-    group.add(crystal, ring, light);
+    group.add(crystal, ring);
     group.visible = false;
     scene.add(group);
-    keyItems.push({ group, crystal, ring, light, collected: false, cell: null });
+    keyItems.push({ group, crystal, ring, collected: false, cell: null });
   }
 
   // ---------- Стрелка подсказки ----------
@@ -963,7 +2172,7 @@
   hintArrowGeo.rotateX(-Math.PI / 2);
 
   const hintPathMat = new THREE.MeshBasicMaterial({
-    color: 0xffd36a,
+    color: 0xffa92e,
     transparent: true,
     opacity: 0.95,
     side: THREE.DoubleSide,
@@ -1116,7 +2325,17 @@
   let previewTimer = null;
   let previewInterval = null;
   let previewEndsAt = 0;
+  const previewOrbit = {
+    theta: -0.82,
+    phi: 0.95,
+    radius: 128,
+    dragging: false,
+    lastX: 0,
+    lastY: 0,
+  };
   let jumpRequested = false;
+  let boost = 1;
+  let boosting = false;
   let transitionTimer = null;
   let toastTimer = null;
   let lastLockedNotice = 0;
@@ -1138,11 +2357,8 @@
   })();
 
   let theme = localStorage.getItem("labirint.theme") === "day" ? "day" : "night";
-  let goalLightBase = theme === "day" ? 10 : 16;
-  let goalLightPulse = theme === "day" ? 8 : 14;
 
-  let wallMesh = null;
-  let trimMesh = null;
+  let sceneryGroup = null;
   let maze = null;
 
   const vel = new THREE.Vector2(0, 0);
@@ -1275,6 +2491,71 @@
 
   function gridDistance(a, b) {
     return Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
+  }
+
+  const LANDMARK_TARGETS = [
+    { kind: "windmill", x: 8, y: 9 },
+    { kind: "bell", x: 38, y: 9 },
+    { kind: "church", x: 8, y: 41 },
+    { kind: "temple", x: 38, y: 42 },
+    { kind: "city", x: 40, y: 23 },
+  ];
+
+  function chooseLandmarkCells(grid) {
+    const chosen = [];
+    const used = [];
+
+    for (const target of LANDMARK_TARGETS) {
+      const candidates = [];
+      for (let y = 1; y < ROWS - 1; y++) {
+        for (let x = 1; x < COLS - 1; x++) {
+          if (grid[y][x] !== 1) continue;
+          if (used.some((u) => gridDistance(u, { x, y }) < 7)) continue;
+
+          const hasOpen =
+            grid[y][x - 1] === 0 ||
+            grid[y][x + 1] === 0 ||
+            grid[y - 1][x] === 0 ||
+            grid[y + 1][x] === 0;
+          if (!hasOpen) continue;
+
+          const d = (x - target.x) ** 2 + (y - target.y) ** 2;
+          candidates.push({ x, y, d });
+        }
+      }
+
+      candidates.sort((a, b) => a.d - b.d);
+      const pick = candidates[0];
+      if (!pick) continue;
+
+      const cell = { kind: target.kind, x: pick.x, y: pick.y, world: cellToWorld(pick.x, pick.y) };
+      chosen.push(cell);
+      used.push(cell);
+    }
+
+    return chosen;
+  }
+
+  function landmarkFacingYaw(grid, x, y) {
+    if (grid[y - 1]?.[x] === 0) return 0;
+    if (grid[y + 1]?.[x] === 0) return Math.PI;
+    if (grid[y]?.[x + 1] === 0) return -Math.PI / 2;
+    if (grid[y]?.[x - 1] === 0) return Math.PI / 2;
+    return 0;
+  }
+
+  function placeLandmarks(cells) {
+    for (const key of Object.keys(landmarkGroups)) {
+      landmarkGroups[key].visible = false;
+    }
+
+    for (const cell of cells) {
+      const group = landmarkGroups[cell.kind];
+      if (!group) continue;
+      group.position.set(cell.world.x, 0, cell.world.z);
+      group.rotation.y = landmarkFacingYaw(maze.grid, cell.x, cell.y);
+      group.visible = true;
+    }
   }
 
   function carveRiver(grid) {
@@ -1554,22 +2835,407 @@
     scene.add(pitRims);
   }
 
+  function buildScenery(wallCells, houseKeys, houses, grid, landmarkKeys) {
+    if (sceneryGroup) {
+      sceneryGroup.traverse((o) => {
+        if (o.isInstancedMesh) o.dispose();
+      });
+      scene.remove(sceneryGroup);
+      sceneryGroup = null;
+    }
+
+    const group = new THREE.Group();
+    const hedgeCells = wallCells.filter(
+      (c) => !houseKeys.has(cellKey(c.x, c.y)) && !landmarkKeys.has(cellKey(c.x, c.y))
+    );
+    const m = new THREE.Matrix4();
+    const pos = new THREE.Vector3();
+    const quat = new THREE.Quaternion();
+    const scale = new THREE.Vector3();
+    const color = new THREE.Color();
+
+    // Изгороди нарезаем на пространственные чанки: камера видит только
+    // коридор вокруг игрока, остальные чанки отсекаются по bounding sphere
+    // и их инстансы вообще не попадают в отрисовку.
+    const CHUNK_CELLS = 10;
+    const hedgeChunks = new Map();
+    for (const cell of hedgeCells) {
+      const key = ((cell.x / CHUNK_CELLS) | 0) + "," + ((cell.y / CHUNK_CELLS) | 0);
+      let bucket = hedgeChunks.get(key);
+      if (!bucket) {
+        bucket = [];
+        hedgeChunks.set(key, bucket);
+      }
+      bucket.push(cell);
+    }
+
+    const addInstanced = (mesh) => {
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      mesh.computeBoundingSphere();
+      group.add(mesh);
+    };
+
+    const baseGreens = [0x2f5732, 0x38643a, 0x416f3d, 0x2a4e2c, 0x477a43];
+    const foliageGreens = [0x3d6b38, 0x4b7d40, 0x5b914a, 0x356032, 0x6a9d55, 0x47733b];
+    const leafTints = [0x466a30, 0x557a3a, 0x3e5f2b, 0x648a44, 0x4e7234, 0x5d823e];
+    const blobsPerHedge = 5;
+    const cardsPerHedge = 2;
+    const upAxis = new THREE.Vector3(0, 1, 0);
+    const euler = new THREE.Euler();
+
+    for (const cells of hedgeChunks.values()) {
+      const count = cells.length;
+
+      // основа живых изгородей
+      const base = new THREE.InstancedMesh(hedgeBaseGeo, hedgeBaseMat, count);
+      base.castShadow = true;
+      base.receiveShadow = true;
+      cells.forEach((cell, i) => {
+        m.makeTranslation(cell.world.x, 0.34, cell.world.z);
+        base.setMatrixAt(i, m);
+        base.setColorAt(i, color.setHex(baseGreens[(Math.random() * baseGreens.length) | 0]));
+      });
+      addInstanced(base);
+
+      // округлые кустики сверху
+      const foliage = new THREE.InstancedMesh(foliageGeo, foliageMat, count * blobsPerHedge);
+      foliage.receiveShadow = true;
+      let index = 0;
+      for (const cell of cells) {
+        for (let j = 0; j < blobsPerHedge; j++) {
+          const ox = (Math.random() - 0.5) * 1.3;
+          const oz = (Math.random() - 0.5) * 1.3;
+          const s = 0.78 + Math.random() * 0.52;
+          pos.set(
+            cell.world.x + ox,
+            0.55 + Math.random() * 0.5,
+            cell.world.z + oz
+          );
+          quat.setFromAxisAngle(upAxis, Math.random() * Math.PI);
+          scale.set(s, s * (0.75 + Math.random() * 0.35), s);
+          m.compose(pos, quat, scale);
+          foliage.setMatrixAt(index, m);
+          color.setHex(foliageGreens[(Math.random() * foliageGreens.length) | 0]);
+          foliage.setColorAt(index, color);
+          index += 1;
+        }
+      }
+      addInstanced(foliage);
+
+      // листовые «карточки» для живой поверхности кустов
+      const leafCards = new THREE.InstancedMesh(leafCardGeo, leafCardMat, count * cardsPerHedge);
+      // карточки тонкие: тень на них почти не читается, а выборка теневой карты
+      // в шейдере стоит дорого — поэтому тени они не принимают
+      leafCards.receiveShadow = false;
+      index = 0;
+      for (const cell of cells) {
+        for (let j = 0; j < cardsPerHedge; j++) {
+          const angle = Math.random() * Math.PI * 2;
+          const radius = 0.42 + Math.random() * 0.5;
+          pos.set(
+            cell.world.x + Math.cos(angle) * radius,
+            0.32 + Math.random() * 0.85,
+            cell.world.z + Math.sin(angle) * radius
+          );
+          euler.set(
+            (Math.random() - 0.5) * 1.5,
+            Math.random() * Math.PI * 2,
+            (Math.random() - 0.5) * 1.5
+          );
+          quat.setFromEuler(euler);
+          const s = 0.9 + Math.random() * 0.5;
+          scale.set(s, s, s);
+          m.compose(pos, quat, scale);
+          leafCards.setMatrixAt(index, m);
+          color.setHex(leafTints[(Math.random() * leafTints.length) | 0]);
+          leafCards.setColorAt(index, color);
+          index += 1;
+        }
+      }
+      addInstanced(leafCards);
+    }
+
+    // домики
+    if (houses.length) {
+      const variants = [
+        { sx: 1.0, sy: 1.15, sz: 1.0, roof: "pyramid", roofH: 0.82, chimney: true },
+        { sx: 0.86, sy: 1.05, sz: 1.04, roof: "gable", roofH: 0.72, chimney: true },
+        { sx: 0.78, sy: 1.38, sz: 0.78, roof: "pyramid", roofH: 0.9, chimney: true },
+        { sx: 0.94, sy: 0.95, sz: 0.94, roof: "pyramid", roofH: 0.62, chimney: false },
+      ];
+      const highVariants = [
+        { sx: 0.72, sy: 2.1, sz: 0.72, roof: "flat", roofH: 0.12, chimney: true, rows: 3 },
+        { sx: 0.82, sy: 2.7, sz: 0.82, roof: "pyramid", roofH: 0.78, chimney: false, rows: 4 },
+        { sx: 0.66, sy: 3.2, sz: 0.66, roof: "pyramid", roofH: 0.5, chimney: false, rows: 4, spire: true },
+        { sx: 1.0, sy: 1.8, sz: 0.78, roof: "flat", roofH: 0.12, chimney: true, rows: 2 },
+      ];
+      const bodyColors = [0xe8dcc4, 0xdccbaa, 0xf0e6d1, 0xcbb894, 0xe2cfa6];
+      const highBodyColors = [0xd8d4c8, 0xc7d2d5, 0xe7d3ab, 0xcbb6a2, 0xbec8c2];
+      const roofColors = [0x9a4f35, 0x7f4a3a, 0x6f5648, 0xa75a3f, 0x8b5734];
+      const highRoofColors = [0x4f5b5e, 0x5d6b56, 0x7d5a4a, 0x46525a, 0x6f5a48];
+      const windowInstances = [];
+      const doorInstances = [];
+      const pyramidRoofs = [];
+      const gableRoofs = [];
+      const flatRoofs = [];
+      const spireInstances = [];
+      const chimneyInstances = [];
+
+      const bodies = new THREE.InstancedMesh(houseBodyGeo, houseBodyMat, houses.length);
+      bodies.castShadow = true;
+      bodies.receiveShadow = true;
+
+      houses.forEach((house, i) => {
+        const wx = house.world.x;
+        const wz = house.world.z;
+        const highRise = !!house.highRise;
+        const pool = highRise ? highVariants : variants;
+        const variant = pool[(Math.random() * pool.length) | 0];
+
+        const bodyW = 1.8 * variant.sx;
+        const bodyD = 1.8 * variant.sz;
+        const bodyH = 1.0 * variant.sy;
+        const roofH = variant.roofH;
+        const roofPalette = highRise ? highRoofColors : roofColors;
+        const roofColor = roofPalette[(Math.random() * roofPalette.length) | 0];
+
+        pos.set(wx, bodyH / 2, wz);
+        quat.identity();
+        scale.set(variant.sx, variant.sy, variant.sz);
+        m.compose(pos, quat, scale);
+        bodies.setMatrixAt(i, m);
+        bodies.setColorAt(
+          i,
+          color.setHex(
+            (highRise ? highBodyColors : bodyColors)[
+              (Math.random() * (highRise ? highBodyColors : bodyColors).length) | 0
+            ]
+          )
+        );
+
+        if (variant.roof === "pyramid") {
+          pyramidRoofs.push({
+            x: wx,
+            z: wz,
+            y: bodyH + roofH / 2 - 0.02,
+            sx: variant.sx,
+            sy: roofH / 0.82,
+            sz: variant.sz,
+            color: roofColor,
+          });
+        } else if (variant.roof === "gable") {
+          gableRoofs.push({
+            x: wx,
+            z: wz,
+            y: bodyH - 0.02,
+            sx: bodyW + 0.2,
+            sy: roofH,
+            sz: bodyD + 0.2,
+            color: roofColor,
+          });
+        } else {
+          flatRoofs.push({
+            x: wx,
+            z: wz,
+            y: bodyH + 0.06,
+            sx: bodyW + 0.16,
+            sy: 0.12,
+            sz: bodyD + 0.16,
+            color: roofColor,
+          });
+        }
+
+        if (variant.spire) {
+          spireInstances.push({
+            x: wx,
+            z: wz,
+            y: bodyH + roofH + 0.35,
+            color: roofColor,
+          });
+        }
+
+        if (variant.chimney) {
+          chimneyInstances.push({
+            x: wx + 0.22 * variant.sx,
+            y: bodyH + (variant.roof === "flat" ? 0.35 : roofH * 0.72),
+            z: wz + 0.22 * variant.sz,
+          });
+        }
+
+        const sides = [];
+        if (house.x > 0 && grid[house.y][house.x - 1] === 0) sides.push({ axis: "x", sign: -1 });
+        if (house.x < COLS - 1 && grid[house.y][house.x + 1] === 0) sides.push({ axis: "x", sign: 1 });
+        if (house.y > 0 && grid[house.y - 1][house.x] === 0) sides.push({ axis: "z", sign: -1 });
+        if (house.y < ROWS - 1 && grid[house.y + 1][house.x] === 0) sides.push({ axis: "z", sign: 1 });
+
+        const windowH = highRise ? 0.3 : Math.min(0.36, bodyH * 0.45);
+        const windowW = highRise ? 0.24 : 0.3;
+        const rows = highRise ? variant.rows || 3 : 1;
+        const doorH = Math.min(0.6, bodyH * 0.8);
+
+        sides.forEach((side, sideIndex) => {
+          const lateralHalf = side.axis === "x" ? bodyD / 2 : bodyW / 2;
+          const offset =
+            sideIndex === 0 ? Math.min(0.52, Math.max(0.34, lateralHalf - 0.18)) : 0;
+
+          if (sideIndex === 0) {
+            if (side.axis === "x") {
+              doorInstances.push({
+                x: wx + side.sign * (bodyW / 2 + 0.01),
+                y: doorH / 2,
+                z: wz,
+                sx: 0.05,
+                sy: doorH,
+                sz: 0.4,
+              });
+            } else {
+              doorInstances.push({
+                x: wx,
+                y: doorH / 2,
+                z: wz + side.sign * (bodyD / 2 + 0.01),
+                sx: 0.4,
+                sy: doorH,
+                sz: 0.05,
+              });
+            }
+          }
+
+          for (let row = 0; row < rows; row++) {
+            const windowY = highRise
+              ? bodyH * (0.38 + row * (0.5 / Math.max(1, rows - 1)))
+              : bodyH * 0.58;
+
+            if (side.axis === "x") {
+              windowInstances.push({
+                x: wx + side.sign * (bodyW / 2 + 0.005),
+                y: windowY,
+                z: wz + offset,
+                sx: 0.03,
+                sy: windowH,
+                sz: windowW,
+              });
+            } else {
+              windowInstances.push({
+                x: wx + offset,
+                y: windowY,
+                z: wz + side.sign * (bodyD / 2 + 0.005),
+                sx: windowW,
+                sy: windowH,
+                sz: 0.03,
+              });
+            }
+          }
+        });
+      });
+
+      bodies.instanceMatrix.needsUpdate = true;
+      if (bodies.instanceColor) bodies.instanceColor.needsUpdate = true;
+      bodies.computeBoundingSphere();
+      group.add(bodies);
+
+      const buildRoofMesh = (geo, items) => {
+        if (!items.length) return;
+        const mesh = new THREE.InstancedMesh(geo, houseRoofMat, items.length);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        items.forEach((r, i) => {
+          pos.set(r.x, r.y, r.z);
+          quat.identity();
+          scale.set(r.sx, r.sy, r.sz);
+          m.compose(pos, quat, scale);
+          mesh.setMatrixAt(i, m);
+          mesh.setColorAt(i, color.setHex(r.color));
+        });
+        mesh.instanceMatrix.needsUpdate = true;
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        mesh.computeBoundingSphere();
+        group.add(mesh);
+      };
+
+      buildRoofMesh(houseRoofGeo, pyramidRoofs);
+      buildRoofMesh(houseGableRoofGeo, gableRoofs);
+      buildRoofMesh(houseFlatRoofGeo, flatRoofs);
+
+      if (spireInstances.length) {
+        const spires = new THREE.InstancedMesh(
+          houseSpireGeo,
+          houseRoofMat,
+          spireInstances.length
+        );
+        spires.castShadow = true;
+        spireInstances.forEach((s, i) => {
+          pos.set(s.x, s.y, s.z);
+          quat.identity();
+          scale.set(1, 1, 1);
+          m.compose(pos, quat, scale);
+          spires.setMatrixAt(i, m);
+          spires.setColorAt(i, color.setHex(s.color));
+        });
+        spires.instanceMatrix.needsUpdate = true;
+        if (spires.instanceColor) spires.instanceColor.needsUpdate = true;
+        spires.computeBoundingSphere();
+        group.add(spires);
+      }
+
+      if (chimneyInstances.length) {
+        const chimneys = new THREE.InstancedMesh(
+          houseChimneyGeo,
+          houseChimneyMat,
+          chimneyInstances.length
+        );
+        chimneys.castShadow = true;
+        chimneyInstances.forEach((c, i) => {
+          m.makeTranslation(c.x, c.y, c.z);
+          chimneys.setMatrixAt(i, m);
+        });
+        chimneys.instanceMatrix.needsUpdate = true;
+        chimneys.computeBoundingSphere();
+        group.add(chimneys);
+      }
+
+      if (windowInstances.length) {
+        const windows = new THREE.InstancedMesh(
+          houseWindowGeo,
+          houseWindowMat,
+          windowInstances.length
+        );
+        windowInstances.forEach((w, i) => {
+          pos.set(w.x, w.y, w.z);
+          quat.identity();
+          scale.set(w.sx, w.sy, w.sz);
+          m.compose(pos, quat, scale);
+          windows.setMatrixAt(i, m);
+        });
+        windows.instanceMatrix.needsUpdate = true;
+        windows.computeBoundingSphere();
+        group.add(windows);
+      }
+
+      if (doorInstances.length) {
+        const doors = new THREE.InstancedMesh(houseDoorGeo, houseDoorMat, doorInstances.length);
+        doorInstances.forEach((d, i) => {
+          pos.set(d.x, d.y, d.z);
+          quat.identity();
+          scale.set(d.sx, d.sy, d.sz);
+          m.compose(pos, quat, scale);
+          doors.setMatrixAt(i, m);
+        });
+        doors.instanceMatrix.needsUpdate = true;
+        doors.computeBoundingSphere();
+        group.add(doors);
+      }
+    }
+
+    sceneryGroup = group;
+    scene.add(group);
+  }
+
   function buildMaze() {
     const grid = generateGrid();
     const river = carveRiver(grid);
     const keyCells = chooseKeyCells(grid, river);
     const pitCells = choosePitCells(grid, river, keyCells);
-
-    if (wallMesh) {
-      scene.remove(wallMesh);
-      wallMesh.dispose();
-      wallMesh = null;
-    }
-    if (trimMesh) {
-      scene.remove(trimMesh);
-      trimMesh.dispose();
-      trimMesh = null;
-    }
 
     const wallCells = [];
     const walls = [];
@@ -1579,7 +3245,7 @@
         if (grid[y][x] !== 1) continue;
 
         const world = cellToWorld(x, y);
-        wallCells.push(world);
+        wallCells.push({ x, y, world });
 
         walls.push({
           minX: world.x - CELL / 2,
@@ -1614,25 +3280,43 @@
       }
     }
 
-    wallMesh = new THREE.InstancedMesh(wallGeo, wallMat, wallCells.length);
-    trimMesh = new THREE.InstancedMesh(trimGeo, trimMat, wallCells.length);
-    wallMesh.castShadow = true;
-    wallMesh.receiveShadow = true;
+    const landmarkCells = chooseLandmarkCells(grid);
+    const landmarkKeys = new Set(
+      landmarkCells.map((cell) => cellKey(cell.x, cell.y))
+    );
 
-    const m = new THREE.Matrix4();
-    wallCells.forEach((p, i) => {
-      m.makeTranslation(p.x, WALL_H / 2, p.z);
-      wallMesh.setMatrixAt(i, m);
-      m.makeTranslation(p.x, WALL_H + 0.01, p.z);
-      trimMesh.setMatrixAt(i, m);
-    });
-    wallMesh.instanceMatrix.needsUpdate = true;
-    trimMesh.instanceMatrix.needsUpdate = true;
-    wallMesh.computeBoundingSphere();
-    trimMesh.computeBoundingSphere();
+    const houseKeys = new Set();
+    const houses = [];
+    const shuffledWalls = shuffleList([...wallCells]);
 
-    scene.add(wallMesh);
-    scene.add(trimMesh);
+    for (const cell of shuffledWalls) {
+      if (houses.length >= 140) break;
+      if (Math.random() > 0.28) continue;
+      if (landmarkKeys.has(cellKey(cell.x, cell.y))) continue;
+
+      const hasOpenNeighbor =
+        (cell.x > 0 && grid[cell.y][cell.x - 1] === 0) ||
+        (cell.x < COLS - 1 && grid[cell.y][cell.x + 1] === 0) ||
+        (cell.y > 0 && grid[cell.y - 1][cell.x] === 0) ||
+        (cell.y < ROWS - 1 && grid[cell.y + 1][cell.x] === 0);
+
+      if (!hasOpenNeighbor) continue;
+      if (houses.some((h) => gridDistance(h, cell) <= 1)) continue;
+
+      houses.push(cell);
+      houseKeys.add(cellKey(cell.x, cell.y));
+    }
+
+    const highRiseSpots = [];
+    for (const house of shuffleList([...houses])) {
+      if (highRiseSpots.length >= 14) break;
+      if (Math.random() > 0.45) continue;
+      if (highRiseSpots.some((spot) => gridDistance(spot, house) < 6)) continue;
+      house.highRise = true;
+      highRiseSpots.push(house);
+    }
+
+    buildScenery(wallCells, houseKeys, houses, grid, landmarkKeys);
 
     const goalWorld = cellToWorld(GOAL_CELL.x, GOAL_CELL.y);
 
@@ -1644,11 +3328,16 @@
       keyCells,
       pits: pitCells.map((c) => ({ ...c, world: cellToWorld(c.x, c.y) })),
       river,
+      houseCells: houseKeys,
+      landmarkCells,
     };
 
     goalGroup.position.set(goalWorld.x, 0, goalWorld.z);
     buildRiverVisuals();
     buildPitVisuals();
+    placeLandmarks(landmarkCells);
+    // мир пересобран — печём карту теней заново (один раз за уровень)
+    renderer.shadowMap.needsUpdate = true;
     resetBall();
     updateCamera(1, true);
   }
@@ -1682,6 +3371,8 @@
     ballVY = 0;
     grounded = true;
     jumpRequested = false;
+    boost = 1;
+    boosting = false;
     ball.quaternion.identity();
     vel.set(0, 0);
     camYaw = pickStartYaw();
@@ -1719,7 +3410,6 @@
     const open = keysCollected >= KEY_COUNT;
     goalPad.material.color.set(open ? 0x37ffb2 : 0xffb45e);
     goalRing.material.color.set(open ? 0x8affd8 : 0xffd9a0);
-    goalLight.color.set(open ? 0x40ffbe : 0xffa04a);
   }
 
   function collectKey(item) {
@@ -1742,6 +3432,7 @@
     mode = "falling";
     keys.clear();
     jumpRequested = false;
+    boosting = false;
     grounded = false;
     ballVY = -2.5;
     fallState = { reason, started: performance.now() };
@@ -1804,23 +3495,22 @@
     floor.material.needsUpdate = true;
 
     trimMat.color.set(0x31545c);
-    ground.material.color.set(0x8d9b8f);
+    ground.material.color.set(0x6f7d57);
     waterMat.color.set(0xc8efff);
     waterMat.emissiveIntensity = 0.25;
 
     hemi.color.set(0xffffff);
     hemi.groundColor.set(0xc0b49d);
-    hemi.intensity = 2.4;
+    // чуть выше, чем в игре: раньше обзорную карту подсвечивал отдельный
+    // hemisphere-свет, от которого мы отказались ради экономии шейдеров
+    hemi.intensity = 2.8;
 
     dirLight.color.set(0xfff1d6);
     dirLight.intensity = 2.6;
 
     renderer.toneMappingExposure = 1.05;
     scene.fog.color.set(0xcfe6f2);
-    scene.fog.density = 0.004;
-
-    previewFill.visible = true;
-    previewFill.intensity = 0.8;
+    scene.fog.density = 0.0025;
 
     sunGroup.visible = false;
     moonSprite.visible = false;
@@ -1835,6 +3525,20 @@
     const seconds = Math.max(0, Math.ceil((previewEndsAt - performance.now()) / 1000));
     previewCountEl.textContent = String(seconds);
     if (seconds <= 0) finishPreview();
+  }
+
+  function updatePreviewCamera() {
+    const orbit = previewOrbit;
+    orbit.phi = Math.max(0.28, Math.min(1.16, orbit.phi));
+    orbit.radius = Math.max(62, Math.min(190, orbit.radius));
+
+    const sinPhi = Math.sin(orbit.phi);
+    camera.position.set(
+      Math.cos(orbit.theta) * sinPhi * orbit.radius,
+      Math.cos(orbit.phi) * orbit.radius,
+      Math.sin(orbit.theta) * sinPhi * orbit.radius
+    );
+    camera.lookAt(0, 1, 0);
   }
 
   function beginPreview() {
@@ -1853,8 +3557,15 @@
     buildPreviewMarkers();
     applyPreviewMapLook();
 
-    camera.position.set(0, 88, 0.2);
-    camera.lookAt(0, 0, 0);
+    previewOrbit.theta = -0.82;
+    previewOrbit.phi = 0.95;
+    previewOrbit.radius = 128;
+    previewOrbit.dragging = false;
+    camera.far = 300;
+    camera.fov = 68;
+    camera.updateProjectionMatrix();
+    updatePreviewCamera();
+    canvas.style.cursor = "grab";
 
     clearTimeout(previewTimer);
     clearInterval(previewInterval);
@@ -1874,11 +3585,15 @@
     mode = "playing";
     time = 0;
     keys.clear();
+    previewOrbit.dragging = false;
+    canvas.style.cursor = "";
 
     previewUi.classList.add("hidden");
     clearPreviewMarkers();
     hud.classList.remove("hidden");
 
+    camera.far = 130;
+    camera.updateProjectionMatrix();
     applyTheme(theme);
 
     updateHud();
@@ -1974,6 +3689,11 @@
       pips[i].classList.toggle("filled", i < keysCollected);
     }
     keyPipsEl.setAttribute("aria-label", `Собрано ключей: ${keysCollected} из ${KEY_COUNT}`);
+
+    if (boostFillEl) {
+      boostFillEl.style.width = `${Math.round(boost * 100)}%`;
+      if (boostBlockEl) boostBlockEl.classList.toggle("low", boost < 0.25);
+    }
   }
 
   function showToast(text, tone = "") {
@@ -2073,53 +3793,26 @@
     let count = 0;
     const maxArrows = 30;
 
-    for (let i = 0; i < path.length - 1 && count < maxArrows; i += 2) {
+    for (let i = 1; i < path.length && count < maxArrows; i += 2) {
       const a = path[i];
-      const b = path[i + 1];
-      const dirX = Math.sign(b.x - a.x);
-      const dirZ = Math.sign(b.y - a.y);
+      const prev = path[i - 1];
+      const next = i < path.length - 1 ? path[i + 1] : a;
 
-      let wall = null;
-      const sides =
-        dirX !== 0
-          ? [
-              { x: 0, y: -1 },
-              { x: 0, y: 1 },
-            ]
-          : [
-              { x: -1, y: 0 },
-              { x: 1, y: 0 },
-            ];
-
-      for (const side of sides) {
-        const wx = a.x + side.x;
-        const wy = a.y + side.y;
-        if (maze.grid[wy]?.[wx] === 1) {
-          wall = { x: wx, y: wy };
-          break;
-        }
+      let dirX = Math.sign(next.x - a.x);
+      let dirZ = Math.sign(next.y - a.y);
+      if (dirX === 0 && dirZ === 0) {
+        dirX = Math.sign(a.x - prev.x);
+        dirZ = Math.sign(a.y - prev.y);
       }
 
-      let px;
-      let py;
-      let pz;
-
-      if (wall) {
-        const w = cellToWorld(wall.x, wall.y);
-        px = w.x;
-        py = WALL_H + 0.04;
-        pz = w.z;
-      } else {
-        const w = cellToWorld(a.x, a.y);
-        px = w.x;
-        py = 0.085;
-        pz = w.z;
-      }
+      const world = cellToWorld(a.x, a.y);
+      const isBridgeCell = maze.river && maze.river.waterCells.has(cellKey(a.x, a.y));
+      const py = isBridgeCell ? 0.1 : 0.045;
 
       const arrow = new THREE.Mesh(hintArrowGeo, hintPathMat);
-      arrow.position.set(px, py, pz);
+      arrow.position.set(world.x, py, world.z);
       arrow.rotation.y = Math.atan2(-dirX, -dirZ);
-      arrow.scale.setScalar(0.62);
+      arrow.scale.setScalar(0.72);
       hintPathGroup.add(arrow);
       count += 1;
     }
@@ -2182,8 +3875,8 @@
     updateHintButton();
     showToast(
       targetType === "key"
-        ? `Ближайший ключ — ${target.dist} шагов. Стрелки на стенах — 15 сек.`
-        : `Выход — ${target.dist} шагов. Стрелки на стенах — 15 сек.`,
+        ? `Ближайший ключ — ${target.dist} шагов. Стрелки на тропинке — 15 сек.`
+        : `Выход — ${target.dist} шагов. Стрелки на тропинке — 15 сек.`,
       "good"
     );
   }
@@ -2237,7 +3930,7 @@
     floor.material.needsUpdate = true;
 
     trimMat.color.set(day ? 0x31545c : 0x2a6678);
-    ground.material.color.set(day ? 0x97a089 : 0x04070c);
+    ground.material.color.set(day ? 0x6f7d57 : 0x0a110b);
     waterMat.color.set(day ? 0xc8efff : 0xe4f4ff);
     waterMat.emissiveIntensity = day ? 0.25 : 0.7;
     pitRimMat.blending = day ? THREE.NormalBlending : THREE.AdditiveBlending;
@@ -2245,11 +3938,9 @@
     ballLight.intensity = day ? 3 : 16;
     camLight.intensity = day ? 12 : 26;
     ball.material.emissiveIntensity = day ? 0.2 : 0.32;
+    houseWindowMat.emissiveIntensity = day ? 0.45 : 1.25;
     dust.material.color.set(day ? 0xffffff : 0x9fd2ff);
     dust.material.opacity = day ? 0.14 : 0.55;
-
-    goalLightBase = day ? 10 : 16;
-    goalLightPulse = day ? 8 : 14;
 
     renderer.toneMappingExposure = day ? 1.0 : 1.25;
 
@@ -2264,7 +3955,6 @@
       sunGroup.visible = day;
       moonSprite.visible = !day;
       starField.visible = !day;
-      previewFill.visible = false;
     }
   }
 
@@ -2279,11 +3969,32 @@
   }
 
   function syncBallUI() {
-    const url = ballPreviewUrl(ball.material.map);
-    if (url) {
-      ballIconEl.style.backgroundImage = `url("${url}")`;
-      ballPreviewEl.style.backgroundImage = `url("${url}")`;
+    const character = CHARACTERS.find((c) => c.id === playerKind) || CHARACTERS[0];
+    const isBall = character.id === "ball";
+
+    if (isBall) {
+      const url = ballPreviewUrl(ball.material.map);
+      if (url) {
+        ballIconEl.style.backgroundImage = `url("${url}")`;
+        ballPreviewEl.style.backgroundImage = `url("${url}")`;
+      }
+      ballIconEl.textContent = "";
+      ballPreviewEl.textContent = "";
+      ballIconEl.classList.remove("animal");
+      ballPreviewEl.classList.remove("animal");
+      ballIconEl.style.background = "";
+      ballPreviewEl.style.background = "";
+    } else {
+      ballIconEl.textContent = character.icon;
+      ballPreviewEl.textContent = character.icon;
+      ballIconEl.classList.add("animal");
+      ballPreviewEl.classList.add("animal");
+      ballIconEl.style.backgroundImage = "none";
+      ballPreviewEl.style.backgroundImage = "none";
+      ballIconEl.style.background = character.accent;
+      ballPreviewEl.style.background = character.accent;
     }
+
     if (ballCustomColor.value.toLowerCase() !== ballColor) {
       ballCustomColor.value = ballColor;
     }
@@ -2293,6 +4004,45 @@
     for (const el of ballPatternGrid.children) {
       el.classList.toggle("active", el.dataset.pattern === ballPattern);
     }
+    for (const el of characterGrid.children) {
+      el.classList.toggle("active", el.dataset.player === playerKind);
+    }
+    ballStyleSection.classList.toggle("hidden", !isBall);
+  }
+
+  function syncPlayerCharacter() {
+    const isBall = playerKind === "ball";
+    ball.visible = isBall;
+
+    for (const [kind, group] of Object.entries(animalGroups)) {
+      group.visible = kind === playerKind;
+    }
+
+    const target = isBall ? ball : animalGroups[playerKind];
+    if (target) {
+      target.add(ballLight);
+      ballLight.position.set(0, isBall ? 0.7 : 0.95, isBall ? 0 : 0.12);
+    }
+
+    localStorage.setItem("labirint.player.v1", playerKind);
+
+    if (!isBall) {
+      const group = animalGroups[playerKind];
+      if (group) {
+        group.position.set(ball.position.x, ball.position.y - GROUND_Y, ball.position.z);
+        group.rotation.y = camYaw;
+      }
+    }
+
+    syncBallUI();
+  }
+
+  function setPlayerKind(kind) {
+    if (!CHARACTERS.some((c) => c.id === kind)) return;
+    playerKind = kind;
+    syncPlayerCharacter();
+    const character = CHARACTERS.find((c) => c.id === kind);
+    showToast(`Герой: ${character.label}`, "good");
   }
 
   function saveBallStyle() {
@@ -2303,7 +4053,17 @@
     const old = ball.material.map;
     const tex = makeBallTexture(ballColor, ballPattern);
     ball.material.map = tex;
-    ball.material.emissive.set(shade(ballColor, -0.1));
+    const canonical =
+      ballPattern === "soccer" ||
+      ballPattern === "basketball" ||
+      ballPattern === "tennis" ||
+      ballPattern === "volleyball" ||
+      ballPattern === "cat" ||
+      ballPattern === "dog" ||
+      ballPattern === "lion" ||
+      ballPattern === "tiger" ||
+      ballPattern === "leopard";
+    ball.material.emissive.set(canonical ? 0x141414 : shade(ballColor, -0.1));
     ball.material.needsUpdate = true;
 
     ballLight.color.set(shade(ballColor, 0.18));
@@ -2351,6 +4111,16 @@
       btn.textContent = item.label;
       btn.addEventListener("click", () => setBallPattern(item.id));
       ballPatternGrid.appendChild(btn);
+    }
+
+    for (const item of CHARACTERS) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "character-btn";
+      btn.dataset.player = item.id;
+      btn.innerHTML = `<span class="char-icon">${item.icon}</span><span>${item.label}</span>`;
+      btn.addEventListener("click", () => setPlayerKind(item.id));
+      characterGrid.appendChild(btn);
     }
 
     ballCustomColor.addEventListener("input", () => setBallColor(ballCustomColor.value));
@@ -2482,9 +4252,22 @@
     const fx = -Math.sin(camYaw);
     const fz = -Math.cos(camYaw);
 
+    const wantsBoost =
+      (keys.has("ShiftLeft") || keys.has("ShiftRight")) && drive > 0 && boost > 0;
+    boosting = wantsBoost;
+
+    if (wantsBoost) {
+      boost = Math.max(0, boost - dt * 0.42);
+    } else {
+      boost = Math.min(1, boost + dt * 0.22);
+    }
+
+    const currentAccel = wantsBoost ? ACCEL * 1.7 : ACCEL;
+    const currentMaxSpeed = wantsBoost ? MAX_SPEED * 1.45 : MAX_SPEED;
+
     if (drive !== 0) {
-      vel.x += fx * drive * ACCEL * dt;
-      vel.y += fz * drive * ACCEL * dt;
+      vel.x += fx * drive * currentAccel * dt;
+      vel.y += fz * drive * currentAccel * dt;
     } else {
       const drag = Math.exp(-3.4 * dt);
       vel.x *= drag;
@@ -2497,8 +4280,8 @@
     vel.y *= rollDrag;
 
     const speed = vel.length();
-    if (speed > MAX_SPEED) {
-      vel.multiplyScalar(MAX_SPEED / speed);
+    if (speed > currentMaxSpeed) {
+      vel.multiplyScalar(currentMaxSpeed / speed);
     }
 
     ball.position.x += vel.x * dt;
@@ -2509,7 +4292,7 @@
     // прыжок
     if (jumpRequested) {
       if (grounded) {
-        ballVY = JUMP_VELOCITY;
+        ballVY = JUMP_VELOCITY * (boosting ? 1.12 : 1);
         grounded = false;
       }
       jumpRequested = false;
@@ -2605,6 +4388,12 @@
       camLook.lerp(camTargetLook, lookK);
     }
 
+    const targetFov = mode === "playing" && boosting ? 74 : 68;
+    if (Math.abs(camera.fov - targetFov) > 0.01) {
+      camera.fov += (targetFov - camera.fov) * (1 - Math.exp(-6 * dt));
+      camera.updateProjectionMatrix();
+    }
+
     camera.lookAt(camLook);
   }
 
@@ -2695,6 +4484,49 @@
     keys.clear();
   });
 
+  // управление обзорной камерой: вращение мышью и зум колесом
+  canvas.addEventListener("pointerdown", (e) => {
+    if (mode !== "preview" || e.button !== 0) return;
+    previewOrbit.dragging = true;
+    previewOrbit.lastX = e.clientX;
+    previewOrbit.lastY = e.clientY;
+    canvas.style.cursor = "grabbing";
+    try {
+      canvas.setPointerCapture(e.pointerId);
+    } catch (err) {
+      /* ignore */
+    }
+  });
+
+  canvas.addEventListener("pointermove", (e) => {
+    if (!previewOrbit.dragging || mode !== "preview") return;
+    const dx = e.clientX - previewOrbit.lastX;
+    const dy = e.clientY - previewOrbit.lastY;
+    previewOrbit.lastX = e.clientX;
+    previewOrbit.lastY = e.clientY;
+    previewOrbit.theta -= dx * 0.005;
+    previewOrbit.phi = Math.max(0.28, Math.min(1.16, previewOrbit.phi + dy * 0.004));
+    updatePreviewCamera();
+  });
+
+  const endPreviewDrag = () => {
+    if (!previewOrbit.dragging) return;
+    previewOrbit.dragging = false;
+    if (mode === "preview") canvas.style.cursor = "grab";
+  };
+  canvas.addEventListener("pointerup", endPreviewDrag);
+  canvas.addEventListener("pointercancel", endPreviewDrag);
+  canvas.addEventListener(
+    "wheel",
+    (e) => {
+      if (mode !== "preview") return;
+      e.preventDefault();
+      previewOrbit.radius = Math.max(62, Math.min(190, previewOrbit.radius + e.deltaY * 0.06));
+      updatePreviewCamera();
+    },
+    { passive: false }
+  );
+
   startBtn.addEventListener("click", () => startGame());
   againBtn.addEventListener("click", () => advanceLevel());
   loseBtn.addEventListener("click", () => restartSame());
@@ -2712,15 +4544,112 @@
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    renderer.setSize(window.innerWidth, window.innerHeight);
+    applyRenderScale();
   });
 
   // ---------- Цикл ----------
+  function updateAnimalCharacter(dt, t) {
+    if (playerKind === "ball") return;
+    const group = animalGroups[playerKind];
+    if (!group) return;
+
+    const speed = vel.length();
+    const run = Math.min(1, speed / 3.2);
+    const airborne = !grounded && mode === "playing";
+    const data = group.userData;
+
+    if (speed > 0.15 && (mode === "playing" || mode === "falling" || mode === "lost")) {
+      data.phase += dt * (7 + speed * 1.7);
+    }
+
+    const phase = data.phase;
+    const swing = run * 0.65;
+
+    data.legs.forEach((leg, index) => {
+      let target;
+      if (airborne) {
+        target = index < 2 ? 0.55 : -0.45;
+      } else {
+        target = Math.sin(phase + leg.offset) * swing;
+      }
+      leg.group.rotation.x += (target - leg.group.rotation.x) * Math.min(1, 14 * dt);
+    });
+
+    if (data.head) {
+      data.head.rotation.x = Math.sin(phase * 2) * 0.05 * run;
+    }
+    if (data.tail) {
+      data.tail.rotation.y = Math.sin(t * 2.2 + phase * 0.4) * 0.4;
+    }
+
+    const bob = grounded ? Math.abs(Math.sin(phase)) * 0.018 * run : 0;
+    group.position.set(ball.position.x, ball.position.y - GROUND_Y + bob, ball.position.z);
+    group.rotation.y = camYaw;
+  }
+
   const clock = new THREE.Clock();
 
-  function animate() {
+  // ---------- Отладка: счётчик FPS ----------
+  // Считаем по меткам requestAnimationFrame, а не по dt из clock:
+  // dt в цикле ограничен 0.05 с и скрыл бы длинные фризы.
+  let fpsFrames = 0;
+  let fpsWindowStart = 0;
+  let lastRenderMs = 0;
+  let slowStreak = 0;
+  let fastStreak = 0;
+
+  function applyRenderScale() {
+    renderer.setPixelRatio(renderScale);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  }
+
+  // Динамическое разрешение — страховка для слабых GPU. Ориентируемся на время
+  // самой отрисовки, а не на интервал кадров: интервал ограничен частотой
+  // композитора (в окне приложения это ~30 Гц), и по нему разрешение падало бы
+  // без всякой пользы, только размывая картинку.
+  function adaptRenderScale() {
+    if (!lastRenderMs) return;
+    if (lastRenderMs > 9) {
+      slowStreak += 1;
+      fastStreak = 0;
+    } else if (lastRenderMs < 4.5) {
+      fastStreak += 1;
+      slowStreak = 0;
+    } else {
+      slowStreak = 0;
+      fastStreak = 0;
+    }
+
+    if (slowStreak >= 3 && renderScale > MIN_RENDER_SCALE) {
+      renderScale = Math.max(MIN_RENDER_SCALE, +(renderScale - 0.1).toFixed(2));
+      slowStreak = 0;
+      applyRenderScale();
+    } else if (fastStreak >= 8 && renderScale < MAX_RENDER_SCALE) {
+      renderScale = Math.min(MAX_RENDER_SCALE, +(renderScale + 0.1).toFixed(2));
+      fastStreak = 0;
+      applyRenderScale();
+    }
+  }
+
+  function updateFpsMeter(now) {
+    if (!fpsEl) return;
+    if (!now) now = performance.now();
+    fpsFrames += 1;
+    if (!fpsWindowStart) fpsWindowStart = now;
+    const elapsed = now - fpsWindowStart;
+    if (elapsed < 500) return;
+
+    const fps = (fpsFrames * 1000) / elapsed;
+    const ms = elapsed / fpsFrames;
+    fpsEl.textContent = `${fps < 100 ? fps.toFixed(1) : Math.round(fps)} fps · ${ms.toFixed(1)} ms · ${renderScale.toFixed(2)}x`;
+    fpsEl.classList.toggle("low", fps < 30);
+    fpsFrames = 0;
+    fpsWindowStart = now;
+  }
+
+  function animate(now) {
     requestAnimationFrame(animate);
+    updateFpsMeter(now);
 
     const dt = Math.min(clock.getDelta(), 0.05);
     const t = clock.elapsedTime;
@@ -2748,12 +4677,28 @@
       updateCamera(dt);
     }
 
+    updateAnimalCharacter(dt, t);
+    ballLight.intensity =
+      (theme === "day" ? 3 : 16) * (mode === "playing" && boosting ? 1.7 : 1);
+
+    // пятно-тень под мячиком/героем: растёт и бледнеет в прыжке
+    const airHeight = Math.max(0, ballY - GROUND_Y);
+    const airK = Math.min(1, airHeight / 1.9);
+    const shadowSize = playerKind === "ball" ? 1.05 : 1.45;
+    heroShadow.visible = mode !== "falling";
+    heroShadow.position.set(ball.position.x, 0.075, ball.position.z);
+    heroShadow.scale.setScalar(shadowSize * (1 + airK * 0.35));
+    heroShadow.material.opacity = 0.85 * (1 - airK * 0.75);
+
+    // ускорение: лёгкое свечение мячика
+    ball.material.emissiveIntensity =
+      (theme === "day" ? 0.2 : 0.32) * (mode === "playing" && boosting ? 1.7 : 1);
+
     // анимация выхода
     const pulse = 0.5 + 0.5 * Math.sin(t * 2.6);
     goalPad.material.opacity = 0.32 + pulse * 0.3;
     const ringScale = 1 + pulse * 0.07;
     goalRing.scale.setScalar(ringScale);
-    goalLight.intensity = goalLightBase + pulse * goalLightPulse;
 
     // ключи парят и вращаются
     keyItems.forEach((item, i) => {
@@ -2762,13 +4707,21 @@
       item.crystal.rotation.x = Math.sin(t * 1.1 + i) * 0.18;
       item.crystal.position.y = 0.75 + Math.sin(t * 2.2 + i * 2.1) * 0.09;
       item.ring.scale.setScalar(1 + Math.sin(t * 3 + i * 1.4) * 0.08);
-      item.light.intensity = 7 + Math.sin(t * 3.2 + i * 2) * 2;
     });
 
     // вода и кромки ям
     waterTex.offset.x = (t * 0.015) % 1;
     waterTex.offset.y = Math.sin(t * 0.5) * 0.015;
     pitRimMat.opacity = 0.55 + pulse * 0.35;
+
+    // анимация ориентиров
+    if (windmillBlades) windmillBlades.rotation.z += dt * 0.8;
+    landmarkBeacons.forEach((beacon, index) => {
+      const pulse = Math.sin(t * 2 + beacon.phase + index);
+      beacon.sprite.material.opacity = 0.68 + pulse * 0.22;
+      const scale = beacon.baseScale * (1 + pulse * 0.08);
+      beacon.sprite.scale.set(scale, scale, 1);
+    });
 
     updateHintPath();
 
@@ -2778,7 +4731,19 @@
     // пыль медленно плывёт
     dust.rotation.y = t * 0.008;
 
+    // Полностью закрытый оверлеем кадр не рисуем (под ним всё равно ничего
+    // не видно). Исключение — кадр, на котором нужно запечь карту теней.
+    const uiCovers =
+      helpOpen ||
+      !overlay.classList.contains("hidden") ||
+      !winOverlay.classList.contains("hidden") ||
+      !loseOverlay.classList.contains("hidden");
+    if (uiCovers && !renderer.shadowMap.needsUpdate) return;
+
+    const renderStart = performance.now();
     renderer.render(scene, camera);
+    lastRenderMs = performance.now() - renderStart;
+    adaptRenderScale();
   }
 
   // ---------- Отладочный доступ (можно удалить) ----------
@@ -2846,6 +4811,7 @@
   // ---------- Старт ----------
   applyTheme(theme);
   initBallControls();
+  syncPlayerCharacter();
   buildMaze();
   updateHud();
   updateCamera(1, true);

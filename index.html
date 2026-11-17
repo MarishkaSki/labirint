@@ -12,11 +12,14 @@
 
     <div class="vignette"></div>
 
+    <div id="fps" class="fps-meter" aria-hidden="true">— fps</div>
+
     <div id="preview" class="preview-ui hidden">
       <div class="preview-head">
         <div class="eyebrow">ПЕРЕД СТАРТОМ</div>
-        <div class="preview-title">КАРТА ЛАБИРИНТА</div>
+        <div class="preview-title">3D-КАРТА ЛАБИРИНТА</div>
         <div class="preview-level">Уровень <span id="previewLevel">1</span></div>
+        <div class="preview-tip">Крути мышью · колесо — приблизить</div>
       </div>
       <div class="preview-bottom">
         <span id="previewCount" class="preview-count">30</span>
@@ -45,6 +48,10 @@
             <span class="key-pip"></span>
           </span>
         </div>
+        <div class="hud-boost">
+          <span class="hud-label">Ускорение</span>
+          <div class="boost-track"><div id="boostFill" class="boost-fill"></div></div>
+        </div>
       </div>
     </div>
 
@@ -70,33 +77,38 @@
       <span id="hintCount" class="hint-fab-count">10</span>
     </button>
 
-    <button id="ballBtn" class="ball-fab" type="button" aria-expanded="false" aria-controls="ballPanel" aria-label="Настроить мячик">
+    <button id="ballBtn" class="ball-fab" type="button" aria-expanded="false" aria-controls="ballPanel" aria-label="Выбрать героя">
       <span id="ballIcon" class="ball-fab-icon"></span>
-      <span class="ball-fab-label">Мяч</span>
+      <span class="ball-fab-label">Герой</span>
     </button>
 
-    <div id="ballPanel" class="ball-panel" aria-label="Настройка мячика">
+    <div id="ballPanel" class="ball-panel" aria-label="Выбор героя">
       <div class="ball-panel-head">
         <div id="ballPreview" class="ball-preview"></div>
         <div class="ball-panel-titles">
-          <div class="eyebrow">Мячик</div>
-          <div class="ball-panel-title">Цвет и узор</div>
+          <div class="eyebrow">ИГРОК</div>
+          <div class="ball-panel-title">Кем играть</div>
         </div>
         <button id="ballClose" class="ball-close" type="button" aria-label="Закрыть">×</button>
       </div>
 
-      <div class="panel-section-title">Цвет</div>
-      <div id="ballColorGrid" class="color-grid"></div>
+      <div class="panel-section-title">Персонаж</div>
+      <div id="characterGrid" class="character-grid"></div>
 
-      <label class="custom-color-row">
-        <span class="custom-color-swatch">
-          <input id="ballCustomColor" type="color" value="#ff7526" aria-label="Свой цвет" />
-        </span>
-        <span>Свой цвет</span>
-      </label>
+      <div id="ballStyleSection" class="ball-only">
+        <div class="panel-section-title">Цвет мяча</div>
+        <div id="ballColorGrid" class="color-grid"></div>
 
-      <div class="panel-section-title">Узор</div>
-      <div id="ballPatternGrid" class="pattern-grid"></div>
+        <label class="custom-color-row">
+          <span class="custom-color-swatch">
+            <input id="ballCustomColor" type="color" value="#ff7526" aria-label="Свой цвет" />
+          </span>
+          <span>Свой цвет</span>
+        </label>
+
+        <div class="panel-section-title">Узор мяча</div>
+        <div id="ballPatternGrid" class="pattern-grid"></div>
+      </div>
     </div>
 
     <div id="overlay" class="overlay">
@@ -106,7 +118,7 @@
         <p class="lede">Собери 3 ключа, перепрыгивай ямы<br />и переходи реку по мостам.<br />За выходом — новый уровень.</p>
         <div class="keys">
           <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><span>или стрелки — газ и поворот</span></div>
-          <div><kbd>Пробел</kbd><span>прыжок через ямы</span></div>
+          <div><kbd>Shift</kbd><span>ускорение</span><kbd>Пробел</kbd><span>прыжок</span></div>
           <div><kbd>R</kbd><span>заново</span><kbd>N</kbd><span>новый лабиринт</span></div>
         </div>
         <button id="startBtn" type="button">Начать</button>
@@ -155,7 +167,7 @@
             <div class="help-num">2</div>
             <div>
               <b>Управление</b>
-              <p><kbd>W</kbd>/<kbd>S</kbd> — катить вперёд/назад, <kbd>A</kbd>/<kbd>D</kbd> — поворот. Камера всегда летит за мячиком.</p>
+              <p><kbd>W</kbd>/<kbd>S</kbd> — катить вперёд/назад, <kbd>A</kbd>/<kbd>D</kbd> — поворот, <kbd>Shift</kbd> — ускорение. Камера всегда летит за мячиком.</p>
             </div>
           </div>
           <div class="help-item">
@@ -183,14 +195,14 @@
             <div class="help-num">6</div>
             <div>
               <b>Подсказки</b>
-              <p>Кнопка «Подсказка» слева внизу. Всего <strong>10</strong> использований. На 15 секунд на стенах появляются золотые стрелки к ближайшему ключу или к выходу.</p>
+              <p>Кнопка «Подсказка» слева внизу. Всего <strong>10</strong> использований. На 15 секунд на тропинках появляются золотые стрелки к ближайшему ключу или к выходу.</p>
             </div>
           </div>
           <div class="help-item">
             <div class="help-num">7</div>
             <div>
-              <b>Мячик</b>
-              <p>Кнопка «Мяч» справа внизу: палитра цветов, свой цвет и узоры — полосы, горошек, клетка, волны, футбольный, баскетбольный, теннисный, волейбольный и другие.</p>
+              <b>Герой</b>
+              <p>Кнопка «Герой» справа внизу: можно играть мячом (цвет и узоры) или выбрать кошку, собаку, льва, тигра, леопарда — они бегают по лабиринту.</p>
             </div>
           </div>
           <div class="help-item">
@@ -205,6 +217,13 @@
             <div>
               <b>Уровни</b>
               <p>За выходом начинается новый уровень. Время и рекорд считаются отдельно для каждого уровня.</p>
+            </div>
+          </div>
+          <div class="help-item">
+            <div class="help-num">10</div>
+            <div>
+              <b>Ориентиры</b>
+              <p>Ищи пять высоких башен: мельницу, колокольню, церковь, храм и Москва Сити. По их силуэтам и огонькам легко понять, где ты находишься.</p>
             </div>
           </div>
         </div>

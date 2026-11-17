@@ -1,0 +1,11 @@
+Hedge seamless texture pack - vegetation_hedge_01.png
+Author: para / paramecij
+License: CC0 1.0 Universal (public domain dedication)
+https://creativecommons.org/publicdomain/zero/1.0/
+Source page: https://opengameart.org/node/22252
+Source file: https://opengameart.org/sites/default/files/oga-textures/22251/vegetation_hedge_01.png
+Downloaded: 2026-11-17
+
+hedge-leaves-source.png is the original 1024 x 1024 seamless photograph.
+hedge-leaves.jpg and foliage-texture.js are JPEG/data-URL encodings of it.
+Rebuild with node tools/bake-foliage-texture.cjs.

@@ -1,0 +1,13 @@
+{
+  "name": "labirint",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node tools/serve.cjs",
+    "build": "node tools/build.cjs",
+    "test": "node tests/layout-connectivity.cjs && node tests/collisions.cjs"
+  },
+  "devDependencies": {
+    "@napi-rs/canvas": "^1.1.1"
+  }
+}

@@ -137,12 +137,15 @@
   // ---------- Рендерер и сцена ----------
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
 
-  // Разрешение рендера подстраивается под фактический fps (см. adaptRenderScale).
+  // Разрешение рендера подстраивается под время отрисовки (см. adaptRenderScale).
   const MAX_RENDER_SCALE = Math.min(window.devicePixelRatio || 1, 1.5);
   const MIN_RENDER_SCALE = 0.7;
   let renderScale = MAX_RENDER_SCALE;
+  let appliedRenderScale = renderScale;
+  let appliedWidth = window.innerWidth;
+  let appliedHeight = window.innerHeight;
   renderer.setPixelRatio(renderScale);
-  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setSize(appliedWidth, appliedHeight);
   renderer.shadowMap.enabled = true;
   // PCFSoft: 16 выборок на фрагмент против 17 у PCF — дешевле и мягче.
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -4752,6 +4755,7 @@
     winOverlay.classList.add("hidden");
     loseOverlay.classList.add("hidden");
     level += 1;
+    hintsLeft = 10;
     time = 0;
     keysCollected = 0;
     keys.clear();
@@ -5692,7 +5696,7 @@
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
-    applyRenderScale();
+    // Размер canvas применится в animate перед renderer.render().
   });
 
   // ---------- Цикл ----------
@@ -5752,22 +5756,71 @@
   let performanceSnapshot = null;
   let slowStreak = 0;
   let fastStreak = 0;
+  let renderMsAvg = 0;
+  let lastScaleChangeAt = -Infinity;
+  let scaleSettleFrames = 0;
+
+  const RENDER_SCALE_STEP = 0.1;
+  const SLOW_RENDER_MS = 9;
+  const FAST_RENDER_MS = 4.5;
+  const SLOW_STREAK_LIMIT = 3;
+  // Вверх поднимаемся неохотнее, чем опускаемся: иначе разрешение «пинг-понгует»
+  // между двумя ступенями, и картинка то размыливается, то становится резкой.
+  const FAST_STREAK_LIMIT = 12;
+  const SCALE_COOLDOWN_MS = 1200;
+  // После пересоздания буфера canvas его замеры не показательны — пропускаем их.
+  const SCALE_SETTLE_FRAMES = 2;
 
   function applyRenderScale() {
-    renderer.setPixelRatio(renderScale);
-    renderer.setSize(window.innerWidth, window.innerHeight);
+    // setPixelRatio()/setSize() пересоздают буфер canvas и стирают его содержимое.
+    // Вызываем их только при реальном изменении и только до отрисовки кадра
+    // (см. animate), иначе готовая картинка пропадёт до следующего кадра.
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    let changed = false;
+    if (renderScale !== appliedRenderScale) {
+      appliedRenderScale = renderScale;
+      // setPixelRatio сам пересчитывает размер canvas через setSize.
+      renderer.setPixelRatio(renderScale);
+      changed = true;
+    }
+    if (width !== appliedWidth || height !== appliedHeight) {
+      appliedWidth = width;
+      appliedHeight = height;
+      renderer.setSize(width, height);
+      changed = true;
+    }
+    if (changed) scaleSettleFrames = SCALE_SETTLE_FRAMES;
   }
 
   // Динамическое разрешение — страховка для слабых GPU. Ориентируемся на время
   // самой отрисовки, а не на интервал кадров: интервал ограничен частотой
   // композитора (в окне приложения это ~30 Гц), и по нему разрешение падало бы
   // без всякой пользы, только размывая картинку.
-  function adaptRenderScale() {
+  //
+  // Вызывается перед renderer.render(): менять размер canvas после отрисовки
+  // нельзя — буфер очищается, и до следующего кадра виден чёрный экран.
+  function adaptRenderScale(now) {
+    // Первые кадры после смены размера canvas не измеряем: в них входит
+    // пересоздание буфера, из-за чего замер был бы завышен.
+    if (scaleSettleFrames > 0) {
+      scaleSettleFrames -= 1;
+      return;
+    }
     if (!lastRenderMs) return;
-    if (lastRenderMs > 9) {
+    if (now - lastScaleChangeAt < SCALE_COOLDOWN_MS) return;
+
+    // Сглаживаем замеры: одиночный всплеск (GC, загрузка текстуры) не должен
+    // дёргать разрешение. Время renderer.render() — это CPU-отправка команд,
+    // а не время GPU, поэтому шум особенно заметен.
+    renderMsAvg = renderMsAvg > 0
+      ? renderMsAvg + (lastRenderMs - renderMsAvg) * 0.2
+      : lastRenderMs;
+
+    if (renderMsAvg > SLOW_RENDER_MS) {
       slowStreak += 1;
       fastStreak = 0;
-    } else if (lastRenderMs < 4.5) {
+    } else if (renderMsAvg < FAST_RENDER_MS) {
       fastStreak += 1;
       slowStreak = 0;
     } else {
@@ -5775,15 +5828,20 @@
       fastStreak = 0;
     }
 
-    if (slowStreak >= 3 && renderScale > MIN_RENDER_SCALE) {
-      renderScale = Math.max(MIN_RENDER_SCALE, +(renderScale - 0.1).toFixed(2));
-      slowStreak = 0;
-      applyRenderScale();
-    } else if (fastStreak >= 8 && renderScale < MAX_RENDER_SCALE) {
-      renderScale = Math.min(MAX_RENDER_SCALE, +(renderScale + 0.1).toFixed(2));
-      fastStreak = 0;
-      applyRenderScale();
+    let nextScale = renderScale;
+    if (slowStreak >= SLOW_STREAK_LIMIT && renderScale > MIN_RENDER_SCALE) {
+      nextScale = Math.max(MIN_RENDER_SCALE, +(renderScale - RENDER_SCALE_STEP).toFixed(2));
+    } else if (fastStreak >= FAST_STREAK_LIMIT && renderScale < MAX_RENDER_SCALE) {
+      nextScale = Math.min(MAX_RENDER_SCALE, +(renderScale + RENDER_SCALE_STEP).toFixed(2));
     }
+    if (nextScale === renderScale) return;
+
+    renderScale = nextScale;
+    slowStreak = 0;
+    fastStreak = 0;
+    renderMsAvg = 0;
+    lastScaleChangeAt = now;
+    // Размер canvas применит animate перед renderer.render().
   }
 
   function updateFpsMeter(now, cpuMs) {
@@ -5918,6 +5976,11 @@
       fpsFrames = 0;
       frameCpuTotalMs = 0;
       frameLogicTotalMs = frameCullTotalMs = frameRenderTotalMs = 0;
+      // Замеры до паузы устарели: после неё не на что опираться.
+      slowStreak = 0;
+      fastStreak = 0;
+      renderMsAvg = 0;
+      lastRenderMs = 0;
       if (fpsEl && fpsEl.textContent !== "Рендер на паузе") {
         fpsEl.textContent = "Рендер на паузе";
         fpsEl.classList.remove("low");
@@ -5929,11 +5992,15 @@
     lastLogicMs = cullStart - frameStart;
     updateFogCulling();
     lastCullMs = performance.now() - cullStart;
+    // Разрешение меняем строго до render(): setPixelRatio()/setSize() очищают
+    // буфер canvas, и после отрисовки готовая картинка пропала бы до следующего
+    // кадра (на слабом GPU это выглядит как чёрная вспышка).
+    adaptRenderScale(performance.now());
+    applyRenderScale();
     const renderStart = performance.now();
     floorReliefCenter.set(ball.position.x, ball.position.z);
     renderer.render(scene, camera);
     lastRenderMs = performance.now() - renderStart;
-    adaptRenderScale();
     updateFpsMeter(now ?? frameStart, performance.now() - frameStart);
   }
 
